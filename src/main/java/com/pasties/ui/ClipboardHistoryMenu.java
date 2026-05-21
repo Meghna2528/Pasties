@@ -7,8 +7,7 @@ import com.pasties.service.PasteService;
 
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
+import java.awt.event.KeyEvent;
 import java.util.List;
 
 /**
@@ -17,7 +16,13 @@ import java.util.List;
 public class ClipboardHistoryMenu {
 
     private static final int GROUP_SIZE = 10;
-    private static final int PREVIEW_CHARS = 70;
+    private static final int PREVIEW_CHARS = 54;
+    private static final Font MENU_FONT = new Font(Font.SANS_SERIF, Font.PLAIN, 14);
+    private static final Font TITLE_FONT = new Font(Font.SANS_SERIF, Font.PLAIN, 14);
+    private static final Color MENU_BACKGROUND = new Color(250, 250, 250);
+    private static final Color MENU_FOREGROUND = new Color(32, 32, 32);
+    private static final Color TITLE_FOREGROUND = new Color(120, 120, 120);
+    private static final Insets ITEM_MARGIN = new Insets(3, 12, 3, 10);
 
     private final ClipboardService clipboardService;
     private final PasteService pasteService;
@@ -28,6 +33,7 @@ public class ClipboardHistoryMenu {
 
     private JWindow anchorWindow;
     private JPopupMenu popupMenu;
+    private KeyEventDispatcher escapeDispatcher;
 
     public ClipboardHistoryMenu(ClipboardService clipboardService,
                                 PasteService pasteService,
@@ -64,46 +70,43 @@ public class ClipboardHistoryMenu {
 
         anchorWindow = new JWindow();
         anchorWindow.setAlwaysOnTop(true);
-        anchorWindow.setFocusableWindowState(true);
+        anchorWindow.setFocusableWindowState(false);
         anchorWindow.setType(Window.Type.POPUP);
         anchorWindow.setSize(1, 1);
         positionAnchor();
-        anchorWindow.addWindowFocusListener(new WindowAdapter() {
-            @Override
-            public void windowLostFocus(WindowEvent e) {
-                close();
-            }
-        });
         anchorWindow.setVisible(true);
 
         popupMenu = buildMenu(entries);
+        popupMenu.setLightWeightPopupEnabled(false);
         popupMenu.addPopupMenuListener(new javax.swing.event.PopupMenuListener() {
             @Override public void popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent e) { }
-            @Override public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) { closeAnchorOnly(); }
-            @Override public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) { closeAnchorOnly(); }
+            @Override public void popupMenuWillBecomeInvisible(javax.swing.event.PopupMenuEvent e) { cleanupAfterPopupHidden(); }
+            @Override public void popupMenuCanceled(javax.swing.event.PopupMenuEvent e) { cleanupAfterPopupHidden(); }
         });
 
+        installEscapeDispatcher();
         popupMenu.show(anchorWindow.getContentPane(), 0, 0);
-        anchorWindow.requestFocusInWindow();
     }
 
     private JPopupMenu buildMenu(List<ClipboardEntry> entries) {
-        JPopupMenu menu = new JPopupMenu();
+        JPopupMenu menu = styledPopup();
 
-        JMenuItem title = new JMenuItem("History");
+        JMenuItem title = styledItem("History");
+        title.setFont(TITLE_FONT);
+        title.setForeground(TITLE_FOREGROUND);
         title.setEnabled(false);
         menu.add(title);
 
         if (entries.isEmpty()) {
-            JMenuItem empty = new JMenuItem("(no history yet)");
+            JMenuItem empty = styledItem("(no history yet)");
             empty.setEnabled(false);
             menu.add(empty);
         } else {
             for (int start = 0; start < entries.size(); start += GROUP_SIZE) {
                 int end = Math.min(start + GROUP_SIZE, entries.size());
-                JMenu group = new JMenu((start + 1) + " - " + end);
+                JMenu group = styledMenu((start + 1) + " - " + end);
                 for (ClipboardEntry entry : entries.subList(start, end)) {
-                    JMenuItem item = new JMenuItem(entry.preview(PREVIEW_CHARS));
+                    JMenuItem item = styledItem(entry.preview(PREVIEW_CHARS));
                     item.addActionListener(e -> paste(entry));
                     group.add(item);
                 }
@@ -111,38 +114,83 @@ public class ClipboardHistoryMenu {
             }
         }
 
-        menu.addSeparator();
+        menu.add(styledSeparator());
 
-        JMenuItem clearHistory = new JMenuItem("Clear History");
+        JMenuItem clearHistory = styledItem("Clear History");
         clearHistory.addActionListener(e -> {
             close();
             clipboardService.clearHistory();
         });
         menu.add(clearHistory);
 
-        JMenuItem snippets = new JMenuItem("Edit Snippets...");
+        JMenuItem snippets = styledItem("Edit Snippets...");
         snippets.addActionListener(e -> {
             close();
             onEditSnippets.run();
         });
         menu.add(snippets);
 
-        JMenuItem preferences = new JMenuItem("Preferences...");
+        JMenuItem preferences = styledItem("Preferences...");
         preferences.addActionListener(e -> {
             close();
             onPreferences.run();
         });
         menu.add(preferences);
 
-        menu.addSeparator();
+        menu.add(styledSeparator());
 
-        JMenuItem quit = new JMenuItem("Quit Pasties");
+        JMenuItem quit = styledItem("Quit Pasties");
         quit.addActionListener(e -> {
             close();
             onQuit.run();
         });
         menu.add(quit);
 
+        return menu;
+    }
+
+    private JMenu styledMenu(String label) {
+        JMenu menu = new JMenu(label);
+        styleItem(menu);
+        menu.getPopupMenu().setLightWeightPopupEnabled(false);
+        menu.getPopupMenu().setBackground(MENU_BACKGROUND);
+        menu.getPopupMenu().setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(205, 205, 205)),
+                BorderFactory.createEmptyBorder(4, 0, 4, 0)
+        ));
+        return menu;
+    }
+
+    private JMenuItem styledItem(String label) {
+        JMenuItem item = new JMenuItem(label);
+        styleItem(item);
+        return item;
+    }
+
+    private void styleItem(JMenuItem item) {
+        item.setFont(MENU_FONT);
+        item.setMargin(ITEM_MARGIN);
+        item.setForeground(MENU_FOREGROUND);
+        item.setBackground(MENU_BACKGROUND);
+        item.setOpaque(true);
+        item.setBorder(BorderFactory.createEmptyBorder(3, 12, 3, 10));
+        item.setPreferredSize(null);
+    }
+
+    private JSeparator styledSeparator() {
+        JSeparator separator = new JSeparator();
+        separator.setForeground(new Color(220, 220, 220));
+        separator.setBackground(MENU_BACKGROUND);
+        return separator;
+    }
+
+    private JPopupMenu styledPopup() {
+        JPopupMenu menu = new JPopupMenu();
+        menu.setBackground(MENU_BACKGROUND);
+        menu.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(205, 205, 205)),
+                BorderFactory.createEmptyBorder(4, 0, 4, 0)
+        ));
         return menu;
     }
 
@@ -162,10 +210,23 @@ public class ClipboardHistoryMenu {
 
     private void positionAnchor() {
         Point mouse = MouseInfo.getPointerInfo().getLocation();
-        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
-        int x = Math.max(0, Math.min(mouse.x, screen.width - 2));
-        int y = Math.max(0, Math.min(mouse.y, screen.height - 2));
+        Rectangle screen = screenBoundsFor(mouse);
+        int x = Math.max(screen.x, Math.min(mouse.x, screen.x + screen.width - 2));
+        int y = Math.max(screen.y, Math.min(mouse.y, screen.y + screen.height - 2));
         anchorWindow.setLocation(x, y);
+    }
+
+    private Rectangle screenBoundsFor(Point point) {
+        for (GraphicsDevice device : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            Rectangle bounds = device.getDefaultConfiguration().getBounds();
+            if (bounds.contains(point)) {
+                return bounds;
+            }
+        }
+        return GraphicsEnvironment.getLocalGraphicsEnvironment()
+                .getDefaultScreenDevice()
+                .getDefaultConfiguration()
+                .getBounds();
     }
 
     private void close() {
@@ -173,7 +234,36 @@ public class ClipboardHistoryMenu {
             popupMenu.setVisible(false);
             popupMenu = null;
         }
+        uninstallEscapeDispatcher();
         closeAnchorOnly();
+    }
+
+    private void installEscapeDispatcher() {
+        uninstallEscapeDispatcher();
+        escapeDispatcher = event -> {
+            if (event.getID() == KeyEvent.KEY_PRESSED
+                    && event.getKeyCode() == KeyEvent.VK_ESCAPE
+                    && popupMenu != null
+                    && popupMenu.isVisible()) {
+                close();
+                return true;
+            }
+            return false;
+        };
+        KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(escapeDispatcher);
+    }
+
+    private void uninstallEscapeDispatcher() {
+        if (escapeDispatcher != null) {
+            KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(escapeDispatcher);
+            escapeDispatcher = null;
+        }
+    }
+
+    private void cleanupAfterPopupHidden() {
+        uninstallEscapeDispatcher();
+        closeAnchorOnly();
+        popupMenu = null;
     }
 
     private void closeAnchorOnly() {

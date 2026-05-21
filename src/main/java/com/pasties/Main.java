@@ -3,6 +3,7 @@ package com.pasties;
 import com.pasties.domain.AppConfig;
 import com.pasties.hook.ClipboardMonitor;
 import com.pasties.hook.GlobalKeyboardHook;
+import com.pasties.hook.MacGlobalHotkey;
 import com.pasties.infrastructure.AppLifecycle;
 import com.pasties.infrastructure.DatabaseManager;
 import com.pasties.infrastructure.PermissionChecker;
@@ -110,15 +111,28 @@ public class Main {
         log.info("Menu bar UI ready");
 
         // 9. Global keyboard hook (after EDT is running)
+        MacGlobalHotkey macHotkey = new MacGlobalHotkey(config, menuBarApp::showHistoryMenu);
+        boolean nativeHotkeyRegistered = false;
+        if (isMacOs()) {
+            try {
+                macHotkey.register();
+                nativeHotkeyRegistered = macHotkey.isRegistered();
+            } catch (Exception e) {
+                log.warn("Native macOS history hotkey registration failed; falling back to JNativeHook hotkey", e);
+            }
+        }
+
+        Runnable jNativeHookHotkeyCallback = nativeHotkeyRegistered ? () -> { } : menuBarApp::showHistoryMenu;
         GlobalKeyboardHook keyboardHook = new GlobalKeyboardHook(
                 snippetService,
                 pasteService,
                 config,
-                menuBarApp::showHistoryMenu
+                jNativeHookHotkeyCallback
         );
         keyboardHook.register();
 
         // 10. Shutdown hooks (registered in reverse teardown order)
+        AppLifecycle.registerShutdownHook(macHotkey::unregister);
         AppLifecycle.registerShutdownHook(keyboardHook::unregister);
         AppLifecycle.registerShutdownHook(clipboardMonitor::stop);
         AppLifecycle.registerShutdownHook(menuBarApp::shutdown);
@@ -131,5 +145,9 @@ public class Main {
 
         // Keep the main thread alive; all work happens on daemon/EDT threads
         Thread.currentThread().join();
+    }
+
+    private static boolean isMacOs() {
+        return System.getProperty("os.name", "").toLowerCase().contains("mac");
     }
 }

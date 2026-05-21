@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS config (
 -- Seed defaults (INSERT OR IGNORE so re-runs are idempotent)
 INSERT OR IGNORE INTO config VALUES ('max_history_size', '200');
 INSERT OR IGNORE INTO config VALUES ('hotkey_modifiers', 'ctrl+shift');
-INSERT OR IGNORE INTO config VALUES ('hotkey_key', 'V');
+INSERT OR IGNORE INTO config VALUES ('hotkey_key', 'S');
 INSERT OR IGNORE INTO config VALUES ('start_on_login', 'false');
 INSERT OR IGNORE INTO config VALUES ('snippet_prefix', '/');
 INSERT OR IGNORE INTO config VALUES ('paste_delay_ms', '80');

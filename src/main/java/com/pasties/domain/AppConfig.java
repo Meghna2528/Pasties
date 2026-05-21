@@ -14,11 +14,11 @@ public class AppConfig {
 
     private int maxHistorySize = 200;
     private String hotkeyModifiers = "ctrl+shift";
-    private String hotkeyKey = "V";
+    private String hotkeyKey = "S";
     private boolean startOnLogin = false;
     private String snippetPrefix = "/";
     private int recentMenuSize = 10;   // items per page in menu bar Recent submenu (1–150)
-    private int popupHistorySize = 50; // items per page in Ctrl+Shift+V popup (1–100)
+    private int popupHistorySize = 50; // legacy popup page size (1–100)
     private int entryTtlDays = 90;     // entries older than this are pruned on next upsert
 
     public int getMaxHistorySize() { return maxHistorySize; }

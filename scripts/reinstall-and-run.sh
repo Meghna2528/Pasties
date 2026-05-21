@@ -13,9 +13,11 @@ BUILT_APP="${APP_IMAGE_DIR}/${APP_NAME}.app"
 INSTALLED_APP="/Applications/${APP_NAME}.app"
 JAR_NAME="pasties-${VERSION}.jar"
 ENTITLEMENTS="${ROOT_DIR}/packaging/entitlements.plist"
+APP_DB="${HOME}/Library/Application Support/${APP_NAME}/pasties.db"
 
 RUN_TESTS=true
 LAUNCH_APP=true
+RESET_PERMISSIONS=false
 
 usage() {
   cat <<EOF
@@ -25,7 +27,7 @@ Build, reinstall, sign, and launch Pasties.
 
 Options:
   --skip-tests          Build without running tests.
-  --reset-permissions   Accepted for compatibility; permissions are always reset.
+  --reset-permissions   Reset Accessibility and Input Monitoring grants before launch.
   --no-launch           Reinstall only; do not launch the app.
   -h, --help            Show this help.
 
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
       RUN_TESTS=false
       ;;
     --reset-permissions)
+      RESET_PERMISSIONS=true
       ;;
     --no-launch)
       LAUNCH_APP=false
@@ -71,6 +74,7 @@ require_command jpackage
 require_command codesign
 require_command open
 require_command pkill
+require_command sqlite3
 require_command tccutil
 
 cd "${ROOT_DIR}"
@@ -117,10 +121,20 @@ cp -R "${BUILT_APP}" "${INSTALLED_APP}"
 echo "==> Ad-hoc signing app bundle"
 codesign --force --deep --sign - --entitlements "${ENTITLEMENTS}" "${INSTALLED_APP}"
 
-echo "==> Resetting macOS privacy grants and refreshing signature"
-tccutil reset Accessibility "${BUNDLE_ID}" || true
-tccutil reset ListenEvent "${BUNDLE_ID}" || true
-codesign --force --deep --sign - "${INSTALLED_APP}"
+if [[ "${RESET_PERMISSIONS}" == "true" ]]; then
+  echo "==> Resetting macOS privacy grants"
+  tccutil reset Accessibility "${BUNDLE_ID}" || true
+  tccutil reset ListenEvent "${BUNDLE_ID}" || true
+fi
+
+echo "==> Refreshing signature"
+codesign --force --deep --sign - --entitlements "${ENTITLEMENTS}" "${INSTALLED_APP}"
+
+if [[ -f "${APP_DB}" ]]; then
+  echo "==> Setting history menu hotkey to Ctrl/Cmd+Shift+S"
+  sqlite3 "${APP_DB}" \
+    "INSERT INTO config(key, value) VALUES ('hotkey_key', 'S') ON CONFLICT(key) DO UPDATE SET value = 'S';"
+fi
 
 if [[ "${LAUNCH_APP}" == "true" ]]; then
   echo "==> Launching ${APP_NAME}"

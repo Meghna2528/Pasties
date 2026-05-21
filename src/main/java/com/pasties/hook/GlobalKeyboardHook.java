@@ -22,7 +22,7 @@ import java.util.logging.Level;
  * Registers a global keyboard hook via JNativeHook and handles two concerns:
  *
  * <h2>1. Hotkey detection</h2>
- * <p>Detects the configurable hotkey (default: Ctrl+Shift+V) and dispatches a
+ * <p>Detects the configurable hotkey (default: Ctrl+Shift+S) and dispatches a
  * callback to show the clipboard history popup on the EDT.
  *
  * <h2>2. Snippet trigger detection (state machine)</h2>
@@ -68,6 +68,7 @@ public class GlobalKeyboardHook implements NativeKeyListener {
     private boolean ctrlDown  = false;
     private boolean metaDown  = false; // Command (⌘) key — treated as equivalent to Ctrl for hotkeys
     private boolean shiftDown = false;
+    private boolean altDown   = false;
 
     /** Single-threaded executor for Robot-based paste operations. */
     private final ExecutorService pasteExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -134,17 +135,34 @@ public class GlobalKeyboardHook implements NativeKeyListener {
     @Override
     public void nativeKeyPressed(NativeKeyEvent e) {
         int code = e.getKeyCode();
+        syncModifierState(e);
 
-        // Track modifier state
+        // Track modifier state. Modifier-only events do not need further processing.
         if (code == NativeKeyEvent.VC_CONTROL) { ctrlDown  = true; return; }
         if (code == NativeKeyEvent.VC_META)    { metaDown  = true; return; }
         if (code == NativeKeyEvent.VC_SHIFT)   { shiftDown = true; return; }
+        if (code == NativeKeyEvent.VC_ALT)     { altDown   = true; return; }
 
-        // Detect configurable hotkey (default: Ctrl+Shift+V)
+        if (ctrlDown || metaDown || shiftDown || altDown) {
+            log.info("Modified key pressed — key={}, keyCode={}, eventModifiers={}, state={}",
+                    NativeKeyEvent.getKeyText(code),
+                    code,
+                    NativeKeyEvent.getModifiersText(e.getModifiers()),
+                    modifierStateForLog());
+        }
+
+        // Detect configurable hotkey (default: Ctrl+Shift+S)
         if (isHotkeyPressed(e)) {
             log.info("Global hotkey detected: {}+{}", config.getHotkeyModifiers(), config.getHotkeyKey());
             SwingUtilities.invokeLater(onHotkeyPressed);
             return;
+        }
+
+        if (isConfiguredTriggerKey(e)) {
+            log.info("Hotkey trigger key pressed but modifiers did not match — key={}, eventModifiers={}, state={}",
+                    NativeKeyEvent.getKeyText(code),
+                    NativeKeyEvent.getModifiersText(e.getModifiers()),
+                    modifierStateForLog());
         }
 
         // Any structural key resets the snippet detection buffer
@@ -156,9 +174,11 @@ public class GlobalKeyboardHook implements NativeKeyListener {
     @Override
     public void nativeKeyReleased(NativeKeyEvent e) {
         int code = e.getKeyCode();
+        syncModifierState(e);
         if (code == NativeKeyEvent.VC_CONTROL) ctrlDown  = false;
         if (code == NativeKeyEvent.VC_META)    metaDown  = false;
         if (code == NativeKeyEvent.VC_SHIFT)   shiftDown = false;
+        if (code == NativeKeyEvent.VC_ALT)     altDown   = false;
     }
 
     @Override
@@ -240,33 +260,77 @@ public class GlobalKeyboardHook implements NativeKeyListener {
     // ---- Helpers ----
 
     private boolean isHotkeyPressed(NativeKeyEvent e) {
-        // Parse the configured hotkey_modifiers string (e.g. "ctrl+shift")
-        String mods = config.getHotkeyModifiers().toLowerCase();
-        boolean needCtrl  = mods.contains("ctrl");
-        boolean needShift = mods.contains("shift");
-        boolean needAlt   = mods.contains("alt");
-
-        int eventMods = e.getModifiers();
-        boolean eventCtrlOrMetaDown = (eventMods & NativeKeyEvent.CTRL_MASK) != 0
-                || (eventMods & NativeKeyEvent.META_MASK) != 0;
-        boolean eventShiftDown = (eventMods & NativeKeyEvent.SHIFT_MASK) != 0;
-
-        if (needCtrl  && !(ctrlDown || metaDown || eventCtrlOrMetaDown)) return false;
-        if (needShift && !(shiftDown || eventShiftDown)) return false;
-        if (needAlt   && !isAltDown(e)) return false;
-
-        // Match the trigger key by name (case-insensitive single char)
-        String hotkeyKey = config.getHotkeyKey().toUpperCase();
-        if (hotkeyKey.length() == 1) {
-            int expectedCode = NativeKeyEvent.getKeyText(e.getKeyCode())
-                    .equalsIgnoreCase(hotkeyKey) ? e.getKeyCode() : -1;
-            return expectedCode != -1;
+        if (!matchesConfiguredModifiers(e)) {
+            return false;
         }
-        return false;
+
+        return isConfiguredTriggerKey(e);
     }
 
-    private boolean isAltDown(NativeKeyEvent e) {
-        return (e.getModifiers() & NativeKeyEvent.ALT_MASK) != 0;
+    private boolean isConfiguredTriggerKey(NativeKeyEvent e) {
+        // Match the trigger key by name (case-insensitive single char)
+        String hotkeyKey = config.getHotkeyKey().toUpperCase();
+        return hotkeyKey.length() == 1
+                && NativeKeyEvent.getKeyText(e.getKeyCode()).equalsIgnoreCase(hotkeyKey);
+    }
+
+    private boolean matchesConfiguredModifiers(NativeKeyEvent e) {
+        String mods = config.getHotkeyModifiers().toLowerCase();
+        int eventModifiers = e.getModifiers();
+        boolean eventCtrlDown = ctrlDown || (eventModifiers & NativeKeyEvent.CTRL_MASK) != 0;
+        boolean eventMetaDown = metaDown || (eventModifiers & NativeKeyEvent.META_MASK) != 0;
+        boolean eventShiftDown = shiftDown || (eventModifiers & NativeKeyEvent.SHIFT_MASK) != 0;
+        boolean eventAltDown = altDown || (eventModifiers & NativeKeyEvent.ALT_MASK) != 0;
+
+        for (String rawToken : mods.split("\\+")) {
+            String token = rawToken.trim();
+            if (token.isEmpty()) {
+                continue;
+            }
+
+            switch (token) {
+                case "ctrl", "control" -> {
+                    // The preferences UI stores "Ctrl / Cmd" as ctrl.
+                    // Either physical key should satisfy the advertised hotkey.
+                    if (!eventCtrlDown && !eventMetaDown) {
+                        return false;
+                    }
+                }
+                case "meta", "cmd", "command" -> {
+                    if (!eventMetaDown) {
+                        return false;
+                    }
+                }
+                case "shift" -> {
+                    if (!eventShiftDown) {
+                        return false;
+                    }
+                }
+                case "alt", "option" -> {
+                    if (!eventAltDown) {
+                        return false;
+                    }
+                }
+                default -> log.warn("Ignoring unknown hotkey modifier '{}'", token);
+            }
+        }
+
+        return true;
+    }
+
+    private void syncModifierState(NativeKeyEvent e) {
+        int modifiers = e.getModifiers();
+        ctrlDown  = ctrlDown  || (modifiers & NativeKeyEvent.CTRL_MASK)  != 0;
+        metaDown  = metaDown  || (modifiers & NativeKeyEvent.META_MASK)  != 0;
+        shiftDown = shiftDown || (modifiers & NativeKeyEvent.SHIFT_MASK) != 0;
+        altDown   = altDown   || (modifiers & NativeKeyEvent.ALT_MASK)   != 0;
+    }
+
+    private String modifierStateForLog() {
+        return "ctrl=" + ctrlDown
+                + ",meta=" + metaDown
+                + ",shift=" + shiftDown
+                + ",alt=" + altDown;
     }
 
     /**

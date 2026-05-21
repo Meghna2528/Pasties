@@ -11,7 +11,7 @@ Pasties lives in your menu bar, keeps a searchable history of everything you've 
 | Feature | Description |
 |---|---|
 | **Clipboard history** | Stores up to 300 text entries (configurable). Deduplicated by content hash. TTL-pruned (default 90 days). |
-| **Global hotkey history menu** | Press **Ctrl+Shift+V** or **⌘+Shift+V** to open a Clipy-style cascading history menu grouped as `1 - 10`, `11 - 20`, and so on. |
+| **Global hotkey history menu** | Press **Ctrl+Shift+S** or **⌘+Shift+S** to open a Clipy-style cascading history menu grouped as `1 - 10`, `11 - 20`, and so on. |
 | **Searchable history picker** | Open **History** from the menu bar to search recent clipboard entries and paste by selection. |
 | **Snippet expansion** | Type `/addr` in any app and it instantly expands to your saved text. |
 | **Performance dashboard** | Live metrics: paste speed, snippet expansion speed, memory, CPU, DB size, and payload sizes. |
@@ -49,11 +49,13 @@ On first launch, Pasties will check for the two required macOS permissions and o
 
 ### Granting permissions (one-time setup)
 
-1. **Input Monitoring** — required for the global keyboard hook (snippet detection, hotkey).
+1. **Input Monitoring** — required for the global keyboard hook used by snippet detection.
    `System Settings → Privacy & Security → Input Monitoring → Add Pasties`
 
 2. **Accessibility** — required for simulating keystrokes (paste, backspace).
    `System Settings → Privacy & Security → Accessibility → Add Pasties`
+
+The history menu hotkey itself is registered through macOS Carbon `RegisterEventHotKey` via JNA Platform, which is more reliable than relying on JNativeHook for app-level shortcuts. JNativeHook remains in use for snippet trigger detection.
 
 After granting both permissions, restart Pasties.
 
@@ -67,14 +69,17 @@ For local development, the easiest full reinstall flow is:
 scripts/reinstall-and-run.sh
 ```
 
-This stops any running Pasties instance, removes old build output and `/Applications/Pasties.app`, runs tests, rebuilds the fat JAR, creates a fresh app bundle, ad-hoc signs it, installs it to `/Applications`, resets macOS Accessibility/Input Monitoring approval state, refreshes the signature, and launches it.
+This stops any running Pasties instance, removes old build output and `/Applications/Pasties.app`, runs tests, rebuilds the fat JAR, creates a fresh app bundle, ad-hoc signs it with the required JVM entitlements, installs it to `/Applications`, updates the local development DB hotkey to `Ctrl/Cmd+Shift+S`, refreshes the signature, and launches it.
 
 Useful options:
 
 ```bash
 scripts/reinstall-and-run.sh --skip-tests
 scripts/reinstall-and-run.sh --no-launch
+scripts/reinstall-and-run.sh --reset-permissions
 ```
+
+`--reset-permissions` explicitly resets macOS Accessibility/Input Monitoring grants with `tccutil`. Do not use it for ordinary rebuilds unless you want to re-grant permissions.
 
 ```bash
 # 1. Package the fat JAR
@@ -102,10 +107,12 @@ The resulting `target/dist/Pasties.app` can be moved to `/Applications`.
 
 ### Clipboard history menu
 
-Press **Ctrl+Shift+V** or **⌘+Shift+V** in any application to open a Clipy-style history menu at the cursor.
+Press **Ctrl+Shift+S** or **⌘+Shift+S** in any application to open a Clipy-style history menu at the cursor.
 
+- **Mouse-first interaction** — hover or click range rows and items. Full arrow-key navigation is not supported yet.
 - **History ranges** — open grouped submenus such as `1 - 10` and `11 - 20`
 - **Clipboard item** — click any item to paste it into the previously active app
+- **Escape** — closes the open hotkey menu
 - **Clear History** — remove all saved clipboard entries
 - **Edit Snippets... / Preferences... / Quit Pasties** — available directly from the hotkey menu
 
@@ -162,7 +169,7 @@ All settings are stored in the SQLite `config` table and editable via **Preferen
 |---|---|---|---|
 | `max_history_size` | `200` | 10–300 | Maximum clipboard entries to keep |
 | `hotkey_modifiers` | `ctrl+shift` | Ctrl/Cmd, Shift, Alt checkboxes | Modifier keys for the history menu hotkey. "Ctrl/Cmd" means either key triggers the hotkey. |
-| `hotkey_key` | `V` | A–Z dropdown | Trigger key for the history menu hotkey |
+| `hotkey_key` | `S` | A–Z dropdown | Trigger key for the history menu hotkey |
 | `snippet_prefix` | `/` | — | Character that starts a snippet trigger (DB only) |
 | `recent_menu_size` | `10` | 10–150 | Maximum entries shown in the Recent tray submenu |
 | `popup_history_size` | `50` | 10–100 | Legacy setting for the old paginated popup |
@@ -185,6 +192,7 @@ The test suite covers:
 - **SHA-256 deduplication** in `ClipboardService`
 - **Key validation and CRUD** in `SnippetService`
 - **Snippet detection state machine** in `SnippetDetectionTest` (no JNativeHook required)
+- **History hotkey matching** in `GlobalKeyboardHookHotkeyTest`
 
 ---
 
@@ -212,7 +220,8 @@ src/main/java/com/pasties/
 │   └── MetricsService.java          Performance metrics collection
 ├── hook/                            System-level event listeners
 │   ├── ClipboardMonitor.java        500 ms clipboard poll
-│   └── GlobalKeyboardHook.java      JNativeHook listener + state machine
+│   ├── GlobalKeyboardHook.java      JNativeHook listener + snippet state machine
+│   └── MacGlobalHotkey.java         Carbon RegisterEventHotKey history shortcut
 └── ui/                              Swing/AWT UI components
     ├── MenuBarApp.java              System tray + top-N Recent submenu
     ├── ClipboardHistoryMenu.java    Clipy-style cascading menu (global hotkey)
@@ -231,7 +240,8 @@ src/main/java/com/pasties/
 | Thread | Purpose |
 |---|---|
 | **EDT** | All Swing/AWT UI: popup show/hide, dialogs |
-| **JNativeHook native thread** | Receive key events, run snippet state machine |
+| **Carbon event dispatcher** | Native macOS history-menu hotkey via `RegisterEventHotKey` |
+| **JNativeHook native thread** | Receive key events for snippet trigger detection |
 | **`paste-executor`** | `PasteService.expandSnippet()` — Robot blocks here (snippet expansion only) |
 | **Ephemeral daemon threads** | `paste-from-history-menu`, `paste-from-search-picker`, `paste-from-menu`, `paste-from-history` — one per clipboard paste operation |
 | **`clipboard-monitor`** | 500 ms clipboard polling |
@@ -278,7 +288,7 @@ Use this reset flow after installing the latest app bundle to `/Applications`:
 ```bash
 tccutil reset Accessibility com.pasties && \
 tccutil reset ListenEvent com.pasties && \
-codesign --force --deep --sign - /Applications/Pasties.app
+codesign --force --deep --sign - --entitlements packaging/entitlements.plist /Applications/Pasties.app
 ```
 
 Then re-enable Pasties manually:
@@ -323,9 +333,9 @@ The diagrams below visualize how `Main.java` wires the layered packages, how sta
 | `infrastructure/` | 3 | DB, permissions, shutdown |
 | `repository/` | 3 | SQLite CRUD (per-table executors) |
 | `service/` | 4 | History + listeners, snippets, paste, metrics |
-| `hook/` | 2 | Clipboard poll + global keys |
+| `hook/` | 3 | Clipboard poll, native history hotkey, snippet key listener |
 | `ui/` | 8 | Tray, Clipy-style menu, search picker, history dialog, settings dialogs |
-| `test/` | 3 | Unit tests (services + snippet FSM) |
+| `test/` | 4 | Unit tests (services, snippet FSM, hotkey matching) |
 
 ### Layered architecture (dependencies)
 
@@ -333,10 +343,11 @@ The diagrams below visualize how `Main.java` wires the layered packages, how sta
 flowchart TB
     subgraph External["macOS & third-party"]
         macOS["macOS APIs<br/>Clipboard · Robot · System Tray"]
+        carbon["Carbon<br/>RegisterEventHotKey"]
         perms["Permissions<br/>Accessibility · Input Monitoring"]
-        jnh["JNativeHook<br/>Global keyboard events"]
+        jnh["JNativeHook<br/>snippet keyboard events"]
         sqlite["SQLite file<br/>~/Library/Application Support/Pasties/"]
-        jna["JNA<br/>AXIsProcessTrusted"]
+        jna["JNA / JNA Platform<br/>AXIsProcessTrusted · Carbon"]
     end
 
     subgraph Entry["Entry"]
@@ -355,7 +366,8 @@ flowchart TB
 
     subgraph Hooks["hook/ — background threads"]
         ClipMon["ClipboardMonitor<br/>500ms poll"]
-        KeyHook["GlobalKeyboardHook<br/>hotkey + snippet FSM"]
+        MacHotkey["MacGlobalHotkey<br/>native history shortcut"]
+        KeyHook["GlobalKeyboardHook<br/>snippet FSM"]
     end
 
     subgraph Services["service/ — business logic"]
@@ -388,7 +400,7 @@ flowchart TB
     Main --> ConfigRepo
     Main --> ClipRepo & SnipRepo
     Main --> ClipSvc & SnipSvc & PasteSvc & MetricsSvc
-    Main --> ClipMon & KeyHook & MenuBar
+    Main --> ClipMon & MacHotkey & KeyHook & MenuBar
     Main --> Life
 
     PermChk --> jna & perms
@@ -403,9 +415,10 @@ flowchart TB
 
     ClipMon --> ClipSvc
     ClipMon --> macOS
+    MacHotkey --> carbon
+    MacHotkey -->|"hotkey callback"| MenuBar
     KeyHook --> jnh
     KeyHook --> SnipSvc & PasteSvc & AppConfig
-    KeyHook -->|"hotkey callback"| MenuBar
 
     MenuBar --> ClipSvc & SnipSvc & PasteSvc & MetricsSvc & ConfigRepo & AppConfig
     MenuBar --> HistoryMenu & SearchPicker & HistDlg & SnippetDlg & PrefsDlg & MetricsDlg
@@ -420,7 +433,7 @@ flowchart TB
     PasteSvc --> MetricsSvc
     ClipSvc & SnipSvc -->|"payload data"| MetricsSvc
 
-    Life --> KeyHook & ClipMon & MenuBar & ClipRepo & SnipRepo & ConfigRepo & DB
+    Life --> MacHotkey & KeyHook & ClipMon & MenuBar & ClipRepo & SnipRepo & ConfigRepo & DB
 ```
 
 ### Startup sequence
@@ -434,6 +447,7 @@ sequenceDiagram
     participant Perm as PermissionChecker
     participant Mon as ClipboardMonitor
     participant UI as MenuBarApp (EDT)
+    participant Hotkey as MacGlobalHotkey
     participant Hook as GlobalKeyboardHook
 
     Main->>DB: initialize()
@@ -446,7 +460,8 @@ sequenceDiagram
     end
     Main->>Mon: start()
     Main->>UI: invokeAndWait(initialize)
-    Main->>Hook: register()
+    Main->>Hotkey: register native history hotkey
+    Main->>Hook: register snippet keyboard hook
     Main->>Main: AppLifecycle shutdown hooks
     Main->>Main: main thread join()
 ```
@@ -465,9 +480,9 @@ flowchart LR
     end
 
     subgraph Hotkey["Hotkey history menu path"]
-        HK["GlobalKeyboardHook"]
+        HK["MacGlobalHotkey<br/>Carbon RegisterEventHotKey"]
         MB4["MenuBarApp<br/>showHistoryMenu()"]
-        HM["ClipboardHistoryMenu<br/>range submenus"]
+        HM["ClipboardHistoryMenu<br/>mouse-first range submenus<br/>Esc closes"]
         PS1["PasteService<br/>paste-from-history-menu thread"]
         HK -->|"invokeLater callback"| MB4 --> HM --> PS1
         CS --> MB4
@@ -484,10 +499,11 @@ flowchart LR
 
     subgraph Snip["Snippet expansion path"]
         Keys["User types /key"]
+        JHK["GlobalKeyboardHook"]
         FSM["Key buffer state machine"]
         SS["SnippetService lookup"]
         PEx["paste-executor"]
-        Keys --> HK --> FSM --> SS
+        Keys --> JHK --> FSM --> SS
         FSM --> PEx --> PS3["PasteService.expandSnippet"]
         PS3 --> App
     end
@@ -506,7 +522,8 @@ flowchart LR
 flowchart TB
     subgraph Threads["Named threads / executors"]
         EDT["EDT<br/>Swing UI, dialogs, popup"]
-        JNH["JNativeHook native thread<br/>key events, snippet FSM"]
+        CarbonT["macOS Carbon event dispatcher<br/>history hotkey"]
+        JNH["JNativeHook native thread<br/>snippet key events"]
         PEx["paste-executor<br/>snippet expansion"]
         CMt["clipboard-monitor<br/>500ms poll"]
         DBC["db-clipboard"]
@@ -522,9 +539,10 @@ flowchart TB
         PH["paste-from-history"]
     end
 
+    MacHotkey["MacGlobalHotkey"] --> CarbonT
+    MacHotkey -->|"invokeLater show menu"| EDT
     KeyHook["GlobalKeyboardHook"] --> JNH
     KeyHook -->|"expandSnippet"| PEx
-    KeyHook -->|"invokeLater show menu"| EDT
 
     ClipMon["ClipboardMonitor"] --> CMt
     ClipRepo["Repositories"] --> DBC & DBS & DBK
@@ -546,11 +564,13 @@ flowchart TB
 flowchart LR
     Pasties["Pasties JAR"]
     Pasties --> JNH["JNativeHook"]
+    Pasties --> Carbon["Carbon RegisterEventHotKey<br/>via JNA Platform"]
     Pasties --> JDBC["sqlite-jdbc"]
     Pasties --> JNA["JNA / jna-platform"]
     Pasties --> Log["SLF4J + Logback"]
 
-    JNH --> macPerm1["Input Monitoring"]
+    JNH --> macPerm1["Input Monitoring<br/>(snippet detection)"]
+    Carbon --> macHotkey["Native app hotkey<br/>(history menu)"]
     JNA --> macPerm2["Accessibility check"]
     Paste["PasteService + Robot"] --> macPerm2
 ```
