@@ -114,7 +114,7 @@ public class Main {
                 snippetService,
                 pasteService,
                 config,
-                menuBarApp::showSearchPicker
+                menuBarApp::showHistoryMenu
         );
         keyboardHook.register();
 

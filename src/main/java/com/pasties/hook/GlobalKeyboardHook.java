@@ -142,6 +142,7 @@ public class GlobalKeyboardHook implements NativeKeyListener {
 
         // Detect configurable hotkey (default: Ctrl+Shift+V)
         if (isHotkeyPressed(e)) {
+            log.info("Global hotkey detected: {}+{}", config.getHotkeyModifiers(), config.getHotkeyKey());
             SwingUtilities.invokeLater(onHotkeyPressed);
             return;
         }
@@ -245,8 +246,13 @@ public class GlobalKeyboardHook implements NativeKeyListener {
         boolean needShift = mods.contains("shift");
         boolean needAlt   = mods.contains("alt");
 
-        if (needCtrl  && !(ctrlDown || metaDown)) return false;
-        if (needShift && !shiftDown) return false;
+        int eventMods = e.getModifiers();
+        boolean eventCtrlOrMetaDown = (eventMods & NativeKeyEvent.CTRL_MASK) != 0
+                || (eventMods & NativeKeyEvent.META_MASK) != 0;
+        boolean eventShiftDown = (eventMods & NativeKeyEvent.SHIFT_MASK) != 0;
+
+        if (needCtrl  && !(ctrlDown || metaDown || eventCtrlOrMetaDown)) return false;
+        if (needShift && !(shiftDown || eventShiftDown)) return false;
         if (needAlt   && !isAltDown(e)) return false;
 
         // Match the trigger key by name (case-insensitive single char)

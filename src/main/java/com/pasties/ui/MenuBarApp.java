@@ -57,6 +57,7 @@ public class MenuBarApp {
     private Menu recentMenu;
 
     private MetricsDashboardDialog dashboardDialog;
+    private ClipboardHistoryMenu historyMenu;
 
     /** Last known full entry list, used to render the Recent submenu and search picker. */
     private List<ClipboardEntry> cachedEntries = List.of();
@@ -98,6 +99,14 @@ public class MenuBarApp {
         }
 
         dashboardDialog = new MetricsDashboardDialog(null, metricsService);
+        historyMenu = new ClipboardHistoryMenu(
+                clipboardService,
+                pasteService,
+                config,
+                this::showSnippetManager,
+                this::showPreferences,
+                this::quit
+        );
 
         // Subscribe to clipboard history changes to keep the Recent submenu fresh
         clipboardService.addChangeListener(entries ->
@@ -108,8 +117,7 @@ public class MenuBarApp {
     }
 
     /**
-     * Opens the searchable clipboard picker (global hotkey).
-     * Must be called on the EDT (dispatched by {@link com.pasties.hook.GlobalKeyboardHook}).
+     * Opens the searchable clipboard picker from the tray History item.
      */
     public void showSearchPicker() {
         if (!SwingUtilities.isEventDispatchThread()) {
@@ -141,6 +149,17 @@ public class MenuBarApp {
                 });
     }
 
+    /**
+     * Opens the Clipy-style cascading clipboard history menu at the cursor.
+     */
+    public void showHistoryMenu() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::showHistoryMenu);
+            return;
+        }
+        historyMenu.show();
+    }
+
     /** Removes the tray icon on shutdown. */
     public void shutdown() {
         if (trayIcon != null) {
@@ -164,8 +183,7 @@ public class MenuBarApp {
         menu.addSeparator();
 
         menu.add(buildItem("Edit Snippets...", e ->
-                SwingUtilities.invokeLater(() ->
-                        new SnippetManagerDialog(null, snippetService).setVisible(true))
+                SwingUtilities.invokeLater(this::showSnippetManager)
         ));
 
         menu.add(buildItem("Performance Dashboard", e ->
@@ -173,22 +191,12 @@ public class MenuBarApp {
         ));
 
         menu.add(buildItem("Preferences...", e ->
-                SwingUtilities.invokeLater(() -> {
-                    PreferencesDialog dialog =
-                            new PreferencesDialog(null, config, clipboardService, configRepo);
-                    dialog.setVisible(true);
-                    if (dialog.wasSaved()) {
-                        renderRecentMenu();
-                    }
-                })
+                SwingUtilities.invokeLater(this::showPreferences)
         ));
 
         menu.addSeparator();
 
-        menu.add(buildItem("Quit Pasties", e -> {
-            com.pasties.infrastructure.AppLifecycle.shutdown();
-            System.exit(0);
-        }));
+        menu.add(buildItem("Quit Pasties", e -> quit()));
 
         return menu;
     }
@@ -233,6 +241,24 @@ public class MenuBarApp {
         MenuItem item = new MenuItem(label);
         item.setEnabled(false);
         return item;
+    }
+
+    private void showSnippetManager() {
+        new SnippetManagerDialog(null, snippetService).setVisible(true);
+    }
+
+    private void showPreferences() {
+        PreferencesDialog dialog =
+                new PreferencesDialog(null, config, clipboardService, configRepo);
+        dialog.setVisible(true);
+        if (dialog.wasSaved()) {
+            renderRecentMenu();
+        }
+    }
+
+    private void quit() {
+        com.pasties.infrastructure.AppLifecycle.shutdown();
+        System.exit(0);
     }
 
     private Image loadIcon() {

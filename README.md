@@ -11,8 +11,8 @@ Pasties lives in your menu bar, keeps a searchable history of everything you've 
 | Feature | Description |
 |---|---|
 | **Clipboard history** | Stores up to 300 text entries (configurable). Deduplicated by content hash. TTL-pruned (default 90 days). |
-| **Global hotkey picker** | Press **Ctrl+Shift+V** or **⌘+Shift+V** to open a searchable clipboard picker. Type to filter, use ↑/↓ to navigate, Enter to paste, Esc to close. |
-| **Full history browser** | Open **History** from the menu bar to browse all entries within the TTL window (up to 200 entries, paginated 10 per page). |
+| **Global hotkey history menu** | Press **Ctrl+Shift+V** or **⌘+Shift+V** to open a Clipy-style cascading history menu grouped as `1 - 10`, `11 - 20`, and so on. |
+| **Searchable history picker** | Open **History** from the menu bar to search recent clipboard entries and paste by selection. |
 | **Snippet expansion** | Type `/addr` in any app and it instantly expands to your saved text. |
 | **Performance dashboard** | Live metrics: paste speed, snippet expansion speed, memory, CPU, DB size, and payload sizes. |
 | **Menu bar app** | No Dock icon. Everything accessible from the system tray. |
@@ -61,6 +61,21 @@ After granting both permissions, restart Pasties.
 
 ## Building a macOS App Bundle
 
+For local development, the easiest full reinstall flow is:
+
+```bash
+scripts/reinstall-and-run.sh
+```
+
+This stops any running Pasties instance, removes old build output and `/Applications/Pasties.app`, runs tests, rebuilds the fat JAR, creates a fresh app bundle, ad-hoc signs it, installs it to `/Applications`, resets macOS Accessibility/Input Monitoring approval state, refreshes the signature, and launches it.
+
+Useful options:
+
+```bash
+scripts/reinstall-and-run.sh --skip-tests
+scripts/reinstall-and-run.sh --no-launch
+```
+
 ```bash
 # 1. Package the fat JAR
 mvn package -q
@@ -85,18 +100,18 @@ The resulting `target/dist/Pasties.app` can be moved to `/Applications`.
 
 ## Usage
 
-### Clipboard search picker
+### Clipboard history menu
 
-Press **Ctrl+Shift+V** or **⌘+Shift+V** in any application to open a searchable floating picker.
+Press **Ctrl+Shift+V** or **⌘+Shift+V** in any application to open a Clipy-style history menu at the cursor.
 
-- **Type** — filter results (up to 100 matches)
-- **↑ / ↓** — move selection
-- **Enter** or **double-click** — paste the selected item into the previously active app
-- **Esc** — close the picker
+- **History ranges** — open grouped submenus such as `1 - 10` and `11 - 20`
+- **Clipboard item** — click any item to paste it into the previously active app
+- **Clear History** — remove all saved clipboard entries
+- **Edit Snippets... / Preferences... / Quit Pasties** — available directly from the hotkey menu
 
-### Full history browser
+### Searchable history picker
 
-Click **History** in the menu bar to open the full history dialog. Loads up to 200 entries directly from the database (the full TTL window), paginated at 10 entries per page. Click or press Enter on any entry to paste it.
+Click **History** in the menu bar to open the searchable picker. It loads recent entries from the database, filters as you type, and pastes the selected item with Enter or double-click.
 
 ### Snippet expansion
 
@@ -112,8 +127,8 @@ Click **History** in the menu bar to open the full history dialog. Loads up to 2
 
 | Menu item | Action |
 |---|---|
-| **Recent** | Shows the latest clipboard entries for quick mouse-based paste (configured by `recent_menu_size`, default 10). The full searchable picker is available through the global hotkey. |
-| **History** | Open the full history browser dialog — loads up to 200 entries from the database (the full TTL window), paginated at 10 per page. |
+| **Recent** | Shows the latest clipboard entries for quick mouse-based paste (configured by `recent_menu_size`, default 10). |
+| **History** | Open the searchable clipboard picker. |
 | **Snippets** | Open the snippet manager to add, edit, or delete snippets. |
 | **Performance Dashboard** | Open the live metrics dashboard. |
 | **Preferences** | Configure history size, page sizes, TTL, hotkey, and start-on-login. |
@@ -146,11 +161,11 @@ All settings are stored in the SQLite `config` table and editable via **Preferen
 | Key | Default | UI range | Description |
 |---|---|---|---|
 | `max_history_size` | `200` | 10–300 | Maximum clipboard entries to keep |
-| `hotkey_modifiers` | `ctrl+shift` | Ctrl/Cmd, Shift, Alt checkboxes | Modifier keys for the search picker hotkey. "Ctrl/Cmd" means either key triggers the hotkey. |
-| `hotkey_key` | `V` | A–Z dropdown | Trigger key for the search picker hotkey |
+| `hotkey_modifiers` | `ctrl+shift` | Ctrl/Cmd, Shift, Alt checkboxes | Modifier keys for the history menu hotkey. "Ctrl/Cmd" means either key triggers the hotkey. |
+| `hotkey_key` | `V` | A–Z dropdown | Trigger key for the history menu hotkey |
 | `snippet_prefix` | `/` | — | Character that starts a snippet trigger (DB only) |
 | `recent_menu_size` | `10` | 10–150 | Maximum entries shown in the Recent tray submenu |
-| `popup_history_size` | `50` | 10–100 | Legacy setting (hotkey picker now uses search with a 100-result cap) |
+| `popup_history_size` | `50` | 10–100 | Legacy setting for the old paginated popup |
 | `entry_ttl_days` | `90` | 90–150 | Days before a clipboard entry is pruned |
 | `start_on_login` | `false` | Checkbox | Auto-start at login (login item setup is manual) |
 
@@ -200,9 +215,10 @@ src/main/java/com/pasties/
 │   └── GlobalKeyboardHook.java      JNativeHook listener + state machine
 └── ui/                              Swing/AWT UI components
     ├── MenuBarApp.java              System tray + top-N Recent submenu
-    ├── ClipboardSearchPicker.java   Searchable floating picker (global hotkey)
-    ├── ClipboardHistoryPopup.java   Legacy popup (unused; superseded by search picker)
-    ├── HistoryDialog.java           Modal full-history browser (DB-backed)
+    ├── ClipboardHistoryMenu.java    Clipy-style cascading menu (global hotkey)
+    ├── ClipboardSearchPicker.java   Searchable floating picker (tray History)
+    ├── ClipboardHistoryPopup.java   Legacy paginated popup (unused)
+    ├── HistoryDialog.java           Legacy modal history browser (DB-backed)
     ├── SnippetManagerDialog.java    Add/edit/delete snippets
     ├── PreferencesDialog.java       Settings editor + clear history
     └── MetricsDashboardDialog.java  Live performance dashboard
@@ -217,7 +233,7 @@ src/main/java/com/pasties/
 | **EDT** | All Swing/AWT UI: popup show/hide, dialogs |
 | **JNativeHook native thread** | Receive key events, run snippet state machine |
 | **`paste-executor`** | `PasteService.expandSnippet()` — Robot blocks here (snippet expansion only) |
-| **Ephemeral daemon threads** | `paste-from-search-picker`, `paste-from-menu`, `paste-from-history` — one per clipboard paste operation |
+| **Ephemeral daemon threads** | `paste-from-history-menu`, `paste-from-search-picker`, `paste-from-menu`, `paste-from-history` — one per clipboard paste operation |
 | **`clipboard-monitor`** | 500 ms clipboard polling |
 | **`db-clipboard`** | All clipboard table SQL |
 | **`db-snippet`** | All snippets table SQL |
@@ -308,7 +324,7 @@ The diagrams below visualize how `Main.java` wires the layered packages, how sta
 | `repository/` | 3 | SQLite CRUD (per-table executors) |
 | `service/` | 4 | History + listeners, snippets, paste, metrics |
 | `hook/` | 2 | Clipboard poll + global keys |
-| `ui/` | 7 | Tray, search picker, history dialog, settings dialogs |
+| `ui/` | 8 | Tray, Clipy-style menu, search picker, history dialog, settings dialogs |
 | `test/` | 3 | Unit tests (services + snippet FSM) |
 
 ### Layered architecture (dependencies)
@@ -329,8 +345,9 @@ flowchart TB
 
     subgraph UI["ui/ — Swing/AWT (EDT)"]
         MenuBar["MenuBarApp<br/>tray + top-N Recent"]
-        SearchPicker["ClipboardSearchPicker<br/>hotkey search picker"]
-        HistDlg["HistoryDialog<br/>full history, DB load"]
+        HistoryMenu["ClipboardHistoryMenu<br/>hotkey cascading menu"]
+        SearchPicker["ClipboardSearchPicker<br/>tray History search picker"]
+        HistDlg["HistoryDialog<br/>legacy full history"]
         SnippetDlg["SnippetManagerDialog"]
         PrefsDlg["PreferencesDialog"]
         MetricsDlg["MetricsDashboardDialog"]
@@ -391,8 +408,9 @@ flowchart TB
     KeyHook -->|"hotkey callback"| MenuBar
 
     MenuBar --> ClipSvc & SnipSvc & PasteSvc & MetricsSvc & ConfigRepo & AppConfig
-    MenuBar --> SearchPicker & HistDlg & SnippetDlg & PrefsDlg & MetricsDlg
+    MenuBar --> HistoryMenu & SearchPicker & HistDlg & SnippetDlg & PrefsDlg & MetricsDlg
     MenuBar -->|"change listener"| ClipSvc
+    HistoryMenu --> ClipSvc & PasteSvc
     SearchPicker --> PasteSvc
     HistDlg --> ClipSvc & PasteSvc
     PrefsDlg --> ClipSvc & ConfigRepo & AppConfig
@@ -446,22 +464,22 @@ flowchart LR
         CS -->|"notify listeners"| MB2["MenuBarApp Recent"]
     end
 
-    subgraph Hotkey["Hotkey search picker path"]
+    subgraph Hotkey["Hotkey history menu path"]
         HK["GlobalKeyboardHook"]
-        MB4["MenuBarApp<br/>showSearchPicker()"]
-        SP["ClipboardSearchPicker<br/>filter + list"]
-        PS1["PasteService<br/>paste-from-search-picker thread"]
-        HK -->|"invokeLater callback"| MB4 --> SP --> PS1
+        MB4["MenuBarApp<br/>showHistoryMenu()"]
+        HM["ClipboardHistoryMenu<br/>range submenus"]
+        PS1["PasteService<br/>paste-from-history-menu thread"]
+        HK -->|"invokeLater callback"| MB4 --> HM --> PS1
         CS --> MB4
         PS1 -->|"Cmd+V via Robot"| App["Active app"]
     end
 
-    subgraph History["History dialog path"]
+    subgraph Search["Tray History search path"]
         MB3["MenuBar → History"]
-        HD["HistoryDialog<br/>loadHistory(200) async"]
-        PS2["PasteService<br/>paste-from-history thread"]
-        MB3 --> HD --> CS
-        HD --> PS2 --> App
+        SP["ClipboardSearchPicker<br/>filter + list"]
+        PS2["PasteService<br/>paste-from-search-picker thread"]
+        MB3 --> SP --> CS
+        SP --> PS2 --> App
     end
 
     subgraph Snip["Snippet expansion path"]
@@ -498,6 +516,7 @@ flowchart TB
     end
 
     subgraph Ephemeral["Ephemeral daemon threads per paste"]
+        PHM["paste-from-history-menu"]
         PF["paste-from-search-picker"]
         PM["paste-from-menu"]
         PH["paste-from-history"]
@@ -505,16 +524,17 @@ flowchart TB
 
     KeyHook["GlobalKeyboardHook"] --> JNH
     KeyHook -->|"expandSnippet"| PEx
-    KeyHook -->|"invokeLater show popup"| EDT
+    KeyHook -->|"invokeLater show menu"| EDT
 
     ClipMon["ClipboardMonitor"] --> CMt
     ClipRepo["Repositories"] --> DBC & DBS & DBK
     PEx --> PasteSvc["PasteService.pasteText"]
 
+    HistoryMenu2["ClipboardHistoryMenu"] --> PHM
     SearchPicker2["ClipboardSearchPicker"] --> PF
     MenuBar["MenuBarApp Recent"] --> PM
     HistDlg["HistoryDialog"] --> PH
-    PF & PM & PH --> PasteSvc
+    PHM & PF & PM & PH --> PasteSvc
 
     ClipSvc["ClipboardService listeners"] -->|"invokeLater"| EDT
     MetricsDlg["MetricsDashboardDialog"] --> MR
