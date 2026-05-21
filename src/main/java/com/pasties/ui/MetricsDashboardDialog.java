@@ -75,6 +75,7 @@ public class MetricsDashboardDialog extends JDialog {
         setMinimumSize(new Dimension(400, 300));
         setLocationRelativeTo(parent);
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        EscapeToClose.install(this);
 
         // Start/stop the refresh task with dialog visibility
         addWindowListener(new java.awt.event.WindowAdapter() {

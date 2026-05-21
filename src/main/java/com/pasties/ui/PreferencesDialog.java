@@ -71,6 +71,7 @@ public class PreferencesDialog extends JDialog {
         setResizable(false);
         setLocationRelativeTo(parent);
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        EscapeToClose.install(this);
     }
 
     public boolean wasSaved() {

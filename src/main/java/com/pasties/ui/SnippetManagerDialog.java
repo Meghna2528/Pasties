@@ -47,6 +47,7 @@ public class SnippetManagerDialog extends JDialog {
         setMinimumSize(new Dimension(480, 280));
         setLocationRelativeTo(parent);
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        EscapeToClose.install(this);
     }
 
     private JTable buildTable() {

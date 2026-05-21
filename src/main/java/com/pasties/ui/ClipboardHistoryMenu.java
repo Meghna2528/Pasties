@@ -2,12 +2,12 @@ package com.pasties.ui;
 
 import com.pasties.domain.ClipboardEntry;
 import com.pasties.domain.AppConfig;
+import com.pasties.hook.MacEscapeHotkey;
 import com.pasties.service.ClipboardService;
 import com.pasties.service.PasteService;
 
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.KeyEvent;
 import java.util.List;
 
 /**
@@ -34,6 +34,7 @@ public class ClipboardHistoryMenu {
     private JWindow anchorWindow;
     private JPopupMenu popupMenu;
     private KeyEventDispatcher escapeDispatcher;
+    private MacEscapeHotkey nativeEscapeHotkey;
 
     public ClipboardHistoryMenu(ClipboardService clipboardService,
                                 PasteService pasteService,
@@ -85,6 +86,7 @@ public class ClipboardHistoryMenu {
         });
 
         installEscapeDispatcher();
+        installNativeEscapeHotkey();
         popupMenu.show(anchorWindow.getContentPane(), 0, 0);
     }
 
@@ -235,21 +237,13 @@ public class ClipboardHistoryMenu {
             popupMenu = null;
         }
         uninstallEscapeDispatcher();
+        uninstallNativeEscapeHotkey();
         closeAnchorOnly();
     }
 
     private void installEscapeDispatcher() {
         uninstallEscapeDispatcher();
-        escapeDispatcher = event -> {
-            if (event.getID() == KeyEvent.KEY_PRESSED
-                    && event.getKeyCode() == KeyEvent.VK_ESCAPE
-                    && popupMenu != null
-                    && popupMenu.isVisible()) {
-                close();
-                return true;
-            }
-            return false;
-        };
+        escapeDispatcher = EscapeToClose.globalDispatcher(this::close);
         KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(escapeDispatcher);
     }
 
@@ -260,8 +254,22 @@ public class ClipboardHistoryMenu {
         }
     }
 
+    private void installNativeEscapeHotkey() {
+        uninstallNativeEscapeHotkey();
+        nativeEscapeHotkey = new MacEscapeHotkey(this::close);
+        nativeEscapeHotkey.register();
+    }
+
+    private void uninstallNativeEscapeHotkey() {
+        if (nativeEscapeHotkey != null) {
+            nativeEscapeHotkey.unregister();
+            nativeEscapeHotkey = null;
+        }
+    }
+
     private void cleanupAfterPopupHidden() {
         uninstallEscapeDispatcher();
+        uninstallNativeEscapeHotkey();
         closeAnchorOnly();
         popupMenu = null;
     }

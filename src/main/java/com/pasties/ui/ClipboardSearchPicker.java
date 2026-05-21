@@ -41,6 +41,7 @@ public class ClipboardSearchPicker extends JDialog {
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setSize(720, 420);
         setLocationRelativeTo(null);
+        EscapeToClose.install(this);
 
         searchField.setBorder(BorderFactory.createEmptyBorder(12, 12, 8, 12));
         searchField.putClientProperty("JTextField.placeholderText", "Search clipboard history...");
