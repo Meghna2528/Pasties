@@ -68,6 +68,15 @@ class SnippetServiceTest {
     }
 
     @Test
+    void findByKey_matchesIgnoringCase() throws Exception {
+        when(repo.getAll()).thenReturn(CompletableFuture.completedFuture(List.of(ADDR_SNIPPET)));
+        service.initialize().get();
+
+        assertTrue(service.findByKey("ADDR").isPresent());
+        assertTrue(service.findByKey("Addr").isPresent());
+    }
+
+    @Test
     void findByKey_missingKey_returnsEmpty() throws Exception {
         when(repo.getAll()).thenReturn(CompletableFuture.completedFuture(List.of()));
         service.initialize().get();
@@ -112,6 +121,21 @@ class SnippetServiceTest {
         Optional<Snippet> found = service.findByKey("sig");
         assertTrue(found.isPresent());
         assertEquals("Best regards", found.get().value());
+    }
+
+    @Test
+    void saveSnippet_normalizesKeyToLowercase() throws Exception {
+        Snippet saved = new Snippet(2L, "li", "LinkedIn", null, Instant.now(), Instant.now());
+
+        when(repo.save(eq("li"), eq("LinkedIn"), isNull()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+        when(repo.findByKey("li"))
+                .thenReturn(CompletableFuture.completedFuture(Optional.of(saved)));
+
+        service.saveSnippet("LI", "LinkedIn", null).get();
+
+        assertTrue(service.findByKey("li").isPresent());
+        assertTrue(service.findByKey("LI").isPresent());
     }
 
     @Test

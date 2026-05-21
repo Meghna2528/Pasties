@@ -103,6 +103,11 @@ mkdir -p "${JPACKAGE_INPUT_DIR}"
 cp "${TARGET_DIR}/${JAR_NAME}" "${JPACKAGE_INPUT_DIR}/"
 
 echo "==> Creating macOS app image"
+JAVA_OPTIONS=(
+  --java-options "-Xmx64m"
+  --java-options "-Dapple.awt.UIElement=true"
+)
+
 jpackage \
   --input "${JPACKAGE_INPUT_DIR}" \
   --main-jar "${JAR_NAME}" \
@@ -111,7 +116,7 @@ jpackage \
   --type app-image \
   --dest "${APP_IMAGE_DIR}" \
   --icon "${ROOT_DIR}/src/main/resources/icon.icns" \
-  --java-options "-Xmx64m -Dapple.awt.UIElement=true" \
+  "${JAVA_OPTIONS[@]}" \
   --mac-package-name "${APP_NAME}" \
   --mac-package-identifier "${BUNDLE_ID}"
 

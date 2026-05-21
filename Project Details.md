@@ -8,13 +8,13 @@ Detailed setup, usage, troubleshooting, and architecture notes for [Pasties](REA
 
 Pasties checks for the two required macOS permissions on launch and opens System Settings automatically if either is missing.
 
-1. **Input Monitoring** — required for the global keyboard hook used by snippet detection.
+1. **Input Monitoring** — required for native global key observation used by snippet detection.
    `System Settings -> Privacy & Security -> Input Monitoring -> Add Pasties`
 
 2. **Accessibility** — required for simulating keystrokes (paste, backspace).
    `System Settings -> Privacy & Security -> Accessibility -> Add Pasties`
 
-The history menu hotkey itself is registered through macOS Carbon `RegisterEventHotKey` via JNA Platform, which is more reliable than relying on JNativeHook for app-level shortcuts. While the hotkey menu is open, Pasties also registers a temporary native Escape hotkey so the menu can close even when keyboard focus remains in the previous app. JNativeHook remains in use for snippet trigger detection.
+The history menu hotkey is registered through macOS Carbon `RegisterEventHotKey` via JNA Platform, which is more reliable than relying on JNativeHook for app-level shortcuts. While the hotkey menu is open, Pasties also registers a temporary native Escape hotkey so the menu can close even when keyboard focus remains in the previous app. Snippet triggers use a native macOS Quartz event tap, with JNativeHook kept as a fallback if native hooks cannot be registered.
 
 After granting both permissions, restart Pasties.
 
@@ -27,6 +27,8 @@ For new users installing from source, use:
 ```bash
 scripts/install.sh
 ```
+
+The installer checks for a full JDK (`java` + `jpackage`) and Maven. If either is missing, it can install the Homebrew dependency or accept a custom JDK path before building and launching `/Applications/Pasties.app`.
 
 Useful options:
 
@@ -66,7 +68,8 @@ jpackage \
   --type app-image \
   --dest target/dist \
   --icon src/main/resources/icon.icns \
-  --java-options "-Xmx64m -Dapple.awt.UIElement=true" \
+  --java-options "-Xmx64m" \
+  --java-options "-Dapple.awt.UIElement=true" \
   --mac-package-name Pasties \
   --mac-package-identifier com.pasties
 ```
@@ -96,10 +99,11 @@ Click **History** in the menu bar to open the searchable picker. It loads recent
 
 1. Open the **Snippets** dialog from the menu bar icon.
 2. Click **Add** and enter a key (e.g. `addr`) and a value (e.g. `123 Main St, City, State`).
-3. In any application, type `/addr` — Pasties erases `/addr` and types your snippet value automatically.
+3. In any application, type `/addr` — Pasties erases `/addr` and types your snippet value automatically. Snippet keys are case-insensitive, so `/ADDR`, `/Addr`, and `/addr` match the same snippet.
 
 **Key rules:**
 - Keys must match `[a-zA-Z0-9_-]+` (letters, digits, dashes, underscores).
+- Keys are normalized for matching, so casing does not matter when typing a trigger.
 - The prefix character is `/` by default (configurable in the database).
 
 ### Menu Bar
@@ -163,7 +167,7 @@ mvn test
 The test suite covers:
 - **SHA-256 deduplication** in `ClipboardService`
 - **Key validation and CRUD** in `SnippetService`
-- **Snippet detection state machine** in `SnippetDetectionTest` (no JNativeHook required)
+- **Snippet detection state machine** in `SnippetDetectionTest` (unit-tested without native hooks)
 - **History hotkey matching** in `GlobalKeyboardHookHotkeyTest`
 
 ---
@@ -192,8 +196,9 @@ src/main/java/com/pasties/
 │   └── MetricsService.java          Performance metrics collection
 ├── hook/                            System-level event listeners
 │   ├── ClipboardMonitor.java        500 ms clipboard poll
-│   ├── GlobalKeyboardHook.java      JNativeHook listener + snippet state machine
+│   ├── GlobalKeyboardHook.java      JNativeHook fallback listener
 │   ├── MacGlobalHotkey.java         Carbon RegisterEventHotKey history shortcut
+│   ├── MacSnippetEventTap.java      Quartz event tap snippet detection
 │   └── MacEscapeHotkey.java         Temporary native Escape shortcut for popups
 └── ui/                              Swing/AWT UI components
     ├── MenuBarApp.java              System tray + top-N Recent submenu
@@ -214,8 +219,10 @@ src/main/java/com/pasties/
 |---|---|
 | **EDT** | All Swing/AWT UI: popup show/hide, dialogs |
 | **Carbon event dispatcher** | Native macOS history-menu hotkey and temporary popup Escape hotkey via `RegisterEventHotKey` |
-| **JNativeHook native thread** | Receive key events for snippet trigger detection |
+| **`mac-snippet-event-tap`** | Native macOS Quartz event tap for typed snippet triggers |
+| **JNativeHook native thread** | Fallback key listener if native macOS hooks cannot be registered |
 | **`paste-executor`** | `PasteService.expandSnippet()` — Robot blocks here (snippet expansion only) |
+| **`paste-executor-mac-event-tap`** | Snippet expansion requests from the native macOS event tap |
 | **Ephemeral daemon threads** | `paste-from-history-menu`, `paste-from-search-picker`, `paste-from-menu`, `paste-from-history` — one per clipboard paste operation |
 | **`clipboard-monitor`** | 500 ms clipboard polling |
 | **`db-clipboard`** | All clipboard table SQL |
@@ -229,7 +236,7 @@ src/main/java/com/pasties/
 
 | Library | Version | License |
 |---|---|---|
-| [JNativeHook](https://github.com/kwhat/jnativehook) | 2.2.2 | LGPL-3.0 |
+| [JNativeHook](https://github.com/kwhat/jnativehook) | 2.2.2 | LGPL-3.0; fallback key listener and Input Monitoring check |
 | [sqlite-jdbc](https://github.com/xerial/sqlite-jdbc) | 3.47.1.0 | Apache-2.0 |
 | [JNA](https://github.com/java-native-access/jna) | 5.18.1 | Apache-2.0 |
 | [JNA Platform](https://github.com/java-native-access/jna) | 5.18.1 | Apache-2.0 |
@@ -306,7 +313,7 @@ The diagrams below visualize how `Main.java` wires the layered packages, how sta
 | `infrastructure/` | 3 | DB, permissions, shutdown |
 | `repository/` | 3 | SQLite CRUD (per-table executors) |
 | `service/` | 4 | History + listeners, snippets, paste, metrics |
-| `hook/` | 4 | Clipboard poll, native history hotkey, native popup Escape hotkey, snippet key listener |
+| `hook/` | 5 | Clipboard poll, native history hotkey, native snippet event tap, native popup Escape hotkey, fallback key listener |
 | `ui/` | 8 | Tray, Clipy-style menu, search picker, history dialog, settings dialogs |
 | `test/` | 4 | Unit tests (services, snippet FSM, hotkey matching) |
 
@@ -317,10 +324,11 @@ flowchart TB
     subgraph External["macOS & third-party"]
         macOS["macOS APIs<br/>Clipboard · Robot · System Tray"]
         carbon["Carbon<br/>RegisterEventHotKey"]
+        quartz["Quartz Event Tap<br/>CGEventTapCreate"]
         perms["Permissions<br/>Accessibility · Input Monitoring"]
-        jnh["JNativeHook<br/>snippet keyboard events"]
+        jnh["JNativeHook<br/>fallback keyboard events"]
         sqlite["SQLite file<br/>~/Library/Application Support/Pasties/"]
-        jna["JNA / JNA Platform<br/>AXIsProcessTrusted · Carbon"]
+        jna["JNA / JNA Platform<br/>AXIsProcessTrusted · Carbon · Quartz"]
     end
 
     subgraph Entry["Entry"]
@@ -341,7 +349,8 @@ flowchart TB
         ClipMon["ClipboardMonitor<br/>500ms poll"]
         MacHotkey["MacGlobalHotkey<br/>native history shortcut"]
         EscHotkey["MacEscapeHotkey<br/>temporary popup Escape shortcut"]
-        KeyHook["GlobalKeyboardHook<br/>snippet FSM"]
+        MacSnippet["MacSnippetEventTap<br/>native snippet FSM"]
+        KeyHook["GlobalKeyboardHook<br/>fallback snippet FSM"]
     end
 
     subgraph Services["service/ — business logic"]
@@ -374,7 +383,7 @@ flowchart TB
     Main --> ConfigRepo
     Main --> ClipRepo & SnipRepo
     Main --> ClipSvc & SnipSvc & PasteSvc & MetricsSvc
-    Main --> ClipMon & MacHotkey & KeyHook & MenuBar
+    Main --> ClipMon & MacHotkey & MacSnippet & KeyHook & MenuBar
     Main --> Life
 
     PermChk --> jna & perms
@@ -394,6 +403,8 @@ flowchart TB
     HistoryMenu --> EscHotkey
     EscHotkey --> carbon
     EscHotkey -->|"Escape callback"| HistoryMenu
+    MacSnippet --> quartz
+    MacSnippet --> SnipSvc & PasteSvc & AppConfig
     KeyHook --> jnh
     KeyHook --> SnipSvc & PasteSvc & AppConfig
 
@@ -410,7 +421,7 @@ flowchart TB
     PasteSvc --> MetricsSvc
     ClipSvc & SnipSvc -->|"payload data"| MetricsSvc
 
-    Life --> MacHotkey & KeyHook & ClipMon & MenuBar & ClipRepo & SnipRepo & ConfigRepo & DB
+    Life --> MacHotkey & MacSnippet & KeyHook & ClipMon & MenuBar & ClipRepo & SnipRepo & ConfigRepo & DB
 ```
 
 ### Startup Sequence
@@ -425,6 +436,7 @@ sequenceDiagram
     participant Mon as ClipboardMonitor
     participant UI as MenuBarApp (EDT)
     participant Hotkey as MacGlobalHotkey
+    participant Tap as MacSnippetEventTap
     participant Hook as GlobalKeyboardHook
 
     Main->>DB: initialize()
@@ -438,7 +450,10 @@ sequenceDiagram
     Main->>Mon: start()
     Main->>UI: invokeAndWait(initialize)
     Main->>Hotkey: register native history hotkey
-    Main->>Hook: register snippet keyboard hook
+    Main->>Tap: register native snippet event tap
+    opt native hooks unavailable
+        Main->>Hook: register JNativeHook fallback
+    end
     Main->>Main: AppLifecycle shutdown hooks
     Main->>Main: main thread join()
 ```
@@ -479,11 +494,14 @@ flowchart LR
 
     subgraph Snip["Snippet expansion path"]
         Keys["User types /key"]
-        JHK["GlobalKeyboardHook"]
+        Tap["MacSnippetEventTap<br/>Quartz CGEventTap"]
+        JHK["GlobalKeyboardHook<br/>fallback"]
         FSM["Key buffer state machine"]
         SS["SnippetService lookup"]
-        PEx["paste-executor"]
-        Keys --> JHK --> FSM --> SS
+        PEx["paste-executor / paste-executor-mac-event-tap"]
+        Keys --> Tap --> FSM --> SS
+        Keys -. fallback .-> JHK
+        JHK --> FSM
         FSM --> PEx --> PS3["PasteService.expandSnippet"]
         PS3 --> App
     end
@@ -503,8 +521,10 @@ flowchart TB
     subgraph Threads["Named threads / executors"]
         EDT["EDT<br/>Swing UI, dialogs, popup"]
         CarbonT["macOS Carbon event dispatcher<br/>history hotkey + popup Escape"]
-        JNH["JNativeHook native thread<br/>snippet key events"]
+        QuartzT["mac-snippet-event-tap<br/>native snippet key events"]
+        JNH["JNativeHook native thread<br/>fallback key events"]
         PEx["paste-executor<br/>snippet expansion"]
+        PMac["paste-executor-mac-event-tap<br/>native snippet expansion"]
         CMt["clipboard-monitor<br/>500ms poll"]
         DBC["db-clipboard"]
         DBS["db-snippet"]
@@ -523,12 +543,15 @@ flowchart TB
     MacHotkey -->|"invokeLater show menu"| EDT
     EscHotkey["MacEscapeHotkey"] --> CarbonT
     EscHotkey -->|"invokeLater close menu"| EDT
+    MacSnippet["MacSnippetEventTap"] --> QuartzT
+    MacSnippet -->|"expandSnippet"| PMac
     KeyHook["GlobalKeyboardHook"] --> JNH
     KeyHook -->|"expandSnippet"| PEx
 
     ClipMon["ClipboardMonitor"] --> CMt
     ClipRepo["Repositories"] --> DBC & DBS & DBK
     PEx --> PasteSvc["PasteService.pasteText"]
+    PMac --> PasteSvc
 
     HistoryMenu2["ClipboardHistoryMenu"] --> PHM
     SearchPicker2["ClipboardSearchPicker"] --> PF
@@ -547,12 +570,14 @@ flowchart LR
     Pasties["Pasties JAR"]
     Pasties --> JNH["JNativeHook"]
     Pasties --> Carbon["Carbon RegisterEventHotKey<br/>via JNA Platform"]
+    Pasties --> Quartz["Quartz CGEventTap<br/>via JNA"]
     Pasties --> JDBC["sqlite-jdbc"]
     Pasties --> JNA["JNA / jna-platform"]
     Pasties --> Log["SLF4J + Logback"]
 
-    JNH --> macPerm1["Input Monitoring<br/>(snippet detection)"]
+    JNH --> macPerm1["Input Monitoring<br/>(fallback snippet detection)"]
     Carbon --> macHotkey["Native app hotkeys<br/>(history menu + popup Escape)"]
+    Quartz --> macPerm3["Input Monitoring<br/>(native snippet detection)"]
     JNA --> macPerm2["Accessibility check"]
     Paste["PasteService + Robot"] --> macPerm2
 ```

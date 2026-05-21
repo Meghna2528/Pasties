@@ -4,6 +4,7 @@ import com.pasties.domain.AppConfig;
 import com.pasties.hook.ClipboardMonitor;
 import com.pasties.hook.GlobalKeyboardHook;
 import com.pasties.hook.MacGlobalHotkey;
+import com.pasties.hook.MacSnippetEventTap;
 import com.pasties.infrastructure.AppLifecycle;
 import com.pasties.infrastructure.DatabaseManager;
 import com.pasties.infrastructure.PermissionChecker;
@@ -72,7 +73,6 @@ public class Main {
         AppConfig config = configRepo.load();
         log.info("Config loaded — maxHistory={}, hotkey={}+{}",
                 config.getMaxHistorySize(), config.getHotkeyModifiers(), config.getHotkeyKey());
-        log.info("Tip: on macOS, Command is usually represented as the meta/cmd modifier in global hotkey config");
 
         // 4. Repositories + Services
         ClipboardRepository clipboardRepo = new ClipboardRepository(db);
@@ -110,15 +110,23 @@ public class Main {
         SwingUtilities.invokeAndWait(menuBarApp::initialize);
         log.info("Menu bar UI ready");
 
-        // 9. Global keyboard hook (after EDT is running)
+        // 9. Global keyboard hooks (after EDT is running)
         MacGlobalHotkey macHotkey = new MacGlobalHotkey(config, menuBarApp::showHistoryMenu);
+        MacSnippetEventTap macSnippetEventTap = new MacSnippetEventTap(snippetService, pasteService, config);
         boolean nativeHotkeyRegistered = false;
+        boolean nativeSnippetHookRegistered = false;
         if (isMacOs()) {
             try {
                 macHotkey.register();
                 nativeHotkeyRegistered = macHotkey.isRegistered();
             } catch (Exception e) {
                 log.warn("Native macOS history hotkey registration failed; falling back to JNativeHook hotkey", e);
+            }
+            try {
+                macSnippetEventTap.register();
+                nativeSnippetHookRegistered = macSnippetEventTap.isRegistered();
+            } catch (Exception e) {
+                log.warn("Native macOS snippet event tap failed; falling back to JNativeHook snippets", e);
             }
         }
 
@@ -127,12 +135,18 @@ public class Main {
                 snippetService,
                 pasteService,
                 config,
-                jNativeHookHotkeyCallback
+                jNativeHookHotkeyCallback,
+                !nativeSnippetHookRegistered
         );
-        keyboardHook.register();
+        if (nativeSnippetHookRegistered && nativeHotkeyRegistered) {
+            log.info("JNativeHook skipped; native macOS hooks are handling snippets and history hotkey");
+        } else {
+            keyboardHook.register();
+        }
 
         // 10. Shutdown hooks (registered in reverse teardown order)
         AppLifecycle.registerShutdownHook(macHotkey::unregister);
+        AppLifecycle.registerShutdownHook(macSnippetEventTap::unregister);
         AppLifecycle.registerShutdownHook(keyboardHook::unregister);
         AppLifecycle.registerShutdownHook(clipboardMonitor::stop);
         AppLifecycle.registerShutdownHook(menuBarApp::shutdown);

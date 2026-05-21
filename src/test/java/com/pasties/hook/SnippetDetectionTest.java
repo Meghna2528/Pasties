@@ -173,6 +173,15 @@ class SnippetDetectionTest {
     }
 
     @Test
+    void typingTrigger_matchesSnippetIgnoringCase() {
+        for (char c : "/ADDR".toCharArray()) {
+            sm.onKeyTyped(c);
+        }
+        assertEquals("ADDR", sm.lastExpansionKey);
+        assertEquals(5, sm.lastEraseCount);
+    }
+
+    @Test
     void typingTrigger_eraseCountEqualsBufferLength() {
         for (char c : "/sig".toCharArray()) {
             sm.onKeyTyped(c);

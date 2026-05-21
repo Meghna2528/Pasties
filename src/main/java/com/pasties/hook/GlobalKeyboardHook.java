@@ -19,13 +19,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
 /**
- * Registers a global keyboard hook via JNativeHook and handles two concerns:
+ * Registers a fallback global keyboard hook via JNativeHook.
  *
  * <h2>1. Hotkey detection</h2>
  * <p>Detects the configurable hotkey (default: Ctrl+Shift+S) and dispatches a
  * callback to show the clipboard history popup on the EDT.
  *
  * <h2>2. Snippet trigger detection (state machine)</h2>
+ * <p>On macOS, {@link MacSnippetEventTap} is the primary snippet listener. This
+ * class keeps the same state machine as a fallback for platforms or setups
+ * where the native macOS hooks are not available.
+ *
  * <p>Maintains a rolling {@link StringBuilder} buffer of recently typed
  * characters. When the buffer ends with {@code /<keyName>} for any known snippet,
  * the trigger fires:
@@ -62,6 +66,8 @@ public class GlobalKeyboardHook implements NativeKeyListener {
     private final PasteService pasteService;
     private final AppConfig config;
     private final Runnable onHotkeyPressed;
+    private final boolean snippetDetectionEnabled;
+    private boolean registered = false;
 
     // Accessed only on the JNativeHook thread — no synchronisation needed
     private final StringBuilder typingBuffer = new StringBuilder(MAX_BUFFER_LENGTH);
@@ -69,6 +75,8 @@ public class GlobalKeyboardHook implements NativeKeyListener {
     private boolean metaDown  = false; // Command (⌘) key — treated as equivalent to Ctrl for hotkeys
     private boolean shiftDown = false;
     private boolean altDown   = false;
+    private char lastPressedSnippetChar = NativeKeyEvent.CHAR_UNDEFINED;
+    private long lastPressedSnippetAtNanos = 0L;
 
     /** Single-threaded executor for Robot-based paste operations. */
     private final ExecutorService pasteExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -87,10 +95,19 @@ public class GlobalKeyboardHook implements NativeKeyListener {
                                PasteService pasteService,
                                AppConfig config,
                                Runnable onHotkeyPressed) {
+        this(snippetService, pasteService, config, onHotkeyPressed, true);
+    }
+
+    public GlobalKeyboardHook(SnippetService snippetService,
+                               PasteService pasteService,
+                               AppConfig config,
+                               Runnable onHotkeyPressed,
+                               boolean snippetDetectionEnabled) {
         this.snippetService = snippetService;
         this.pasteService = pasteService;
         this.config = config;
         this.onHotkeyPressed = onHotkeyPressed;
+        this.snippetDetectionEnabled = snippetDetectionEnabled;
     }
 
     /**
@@ -101,6 +118,7 @@ public class GlobalKeyboardHook implements NativeKeyListener {
         try {
             GlobalScreen.registerNativeHook();
             GlobalScreen.addNativeKeyListener(this);
+            registered = true;
             log.info("Global keyboard hook registered");
         } catch (NativeHookException e) {
             log.error("Failed to register global keyboard hook — Input Monitoring permission may be missing", e);
@@ -112,9 +130,14 @@ public class GlobalKeyboardHook implements NativeKeyListener {
      * Unregisters the native hook and shuts down the paste executor.
      */
     public void unregister() {
+        if (!registered) {
+            pasteExecutor.shutdownNow();
+            return;
+        }
         try {
             GlobalScreen.removeNativeKeyListener(this);
             GlobalScreen.unregisterNativeHook();
+            registered = false;
             log.info("Global keyboard hook unregistered");
         } catch (NativeHookException e) {
             log.error("Error unregistering keyboard hook", e);
@@ -143,14 +166,6 @@ public class GlobalKeyboardHook implements NativeKeyListener {
         if (code == NativeKeyEvent.VC_SHIFT)   { shiftDown = true; return; }
         if (code == NativeKeyEvent.VC_ALT)     { altDown   = true; return; }
 
-        if (ctrlDown || metaDown || shiftDown || altDown) {
-            log.info("Modified key pressed — key={}, keyCode={}, eventModifiers={}, state={}",
-                    NativeKeyEvent.getKeyText(code),
-                    code,
-                    NativeKeyEvent.getModifiersText(e.getModifiers()),
-                    modifierStateForLog());
-        }
-
         // Detect configurable hotkey (default: Ctrl+Shift+S)
         if (isHotkeyPressed(e)) {
             log.info("Global hotkey detected: {}+{}", config.getHotkeyModifiers(), config.getHotkeyKey());
@@ -158,16 +173,24 @@ public class GlobalKeyboardHook implements NativeKeyListener {
             return;
         }
 
-        if (isConfiguredTriggerKey(e)) {
-            log.info("Hotkey trigger key pressed but modifiers did not match — key={}, eventModifiers={}, state={}",
-                    NativeKeyEvent.getKeyText(code),
-                    NativeKeyEvent.getModifiersText(e.getModifiers()),
-                    modifierStateForLog());
+        if (!snippetDetectionEnabled) {
+            return;
         }
 
-        // Any structural key resets the snippet detection buffer
         if (isClearingKey(code)) {
             typingBuffer.setLength(0);
+            return;
+        }
+
+        if (ctrlDown || metaDown || altDown) {
+            return;
+        }
+
+        Character snippetChar = snippetCharFromKeyPressed(e);
+        if (snippetChar != null) {
+            handleSnippetCharacter(snippetChar);
+            lastPressedSnippetChar = snippetChar;
+            lastPressedSnippetAtNanos = System.nanoTime();
         }
     }
 
@@ -183,7 +206,34 @@ public class GlobalKeyboardHook implements NativeKeyListener {
 
     @Override
     public void nativeKeyTyped(NativeKeyEvent e) {
+        if (!snippetDetectionEnabled) {
+            return;
+        }
         char ch = e.getKeyChar();
+        int modifiers = e.getModifiers();
+        boolean shortcutModifierDown = (modifiers & NativeKeyEvent.CTRL_MASK) != 0
+                || (modifiers & NativeKeyEvent.META_MASK) != 0
+                || (modifiers & NativeKeyEvent.ALT_MASK) != 0;
+        if (ch == NativeKeyEvent.CHAR_UNDEFINED || shortcutModifierDown) {
+            return;
+        }
+
+        // Pressed events are preferred because some apps do not consistently
+        // emit typed events globally. Typed events remain as a fallback for
+        // keyboard layouts/apps where pressed events do not expose printable
+        // characters such as '/'.
+        char normalized = Character.toLowerCase(ch);
+        if (normalized == lastPressedSnippetChar
+                && System.nanoTime() - lastPressedSnippetAtNanos < TimeUnit.MILLISECONDS.toNanos(75)) {
+            return;
+        }
+
+        handleSnippetCharacter(normalized);
+    }
+
+    // ---- Snippet detection state machine ----
+
+    private void handleSnippetCharacter(char ch) {
         String prefix = config.getSnippetPrefix();
         char prefixChar = prefix.isEmpty() ? '/' : prefix.charAt(0);
 
@@ -215,8 +265,6 @@ public class GlobalKeyboardHook implements NativeKeyListener {
         checkSnippetMatch();
     }
 
-    // ---- Snippet detection state machine ----
-
     /**
      * Checks whether the current buffer content matches a known snippet trigger.
      *
@@ -244,7 +292,7 @@ public class GlobalKeyboardHook implements NativeKeyListener {
             // Clear buffer immediately — prevents re-matching on subsequent keystrokes
             typingBuffer.setLength(0);
 
-            log.debug("Snippet matched: /{} → {} chars", candidate, snippetValue.length());
+            log.info("Snippet matched: /{} -> {} chars", candidate, snippetValue.length());
 
             // Offload to paste-executor; must not block the JNativeHook thread
             pasteExecutor.submit(() -> {
@@ -320,17 +368,31 @@ public class GlobalKeyboardHook implements NativeKeyListener {
 
     private void syncModifierState(NativeKeyEvent e) {
         int modifiers = e.getModifiers();
-        ctrlDown  = ctrlDown  || (modifiers & NativeKeyEvent.CTRL_MASK)  != 0;
-        metaDown  = metaDown  || (modifiers & NativeKeyEvent.META_MASK)  != 0;
-        shiftDown = shiftDown || (modifiers & NativeKeyEvent.SHIFT_MASK) != 0;
-        altDown   = altDown   || (modifiers & NativeKeyEvent.ALT_MASK)   != 0;
+        ctrlDown  = (modifiers & NativeKeyEvent.CTRL_MASK)  != 0;
+        metaDown  = (modifiers & NativeKeyEvent.META_MASK)  != 0;
+        shiftDown = (modifiers & NativeKeyEvent.SHIFT_MASK) != 0;
+        altDown   = (modifiers & NativeKeyEvent.ALT_MASK)   != 0;
     }
 
-    private String modifierStateForLog() {
-        return "ctrl=" + ctrlDown
-                + ",meta=" + metaDown
-                + ",shift=" + shiftDown
-                + ",alt=" + altDown;
+    private Character snippetCharFromKeyPressed(NativeKeyEvent e) {
+        int code = e.getKeyCode();
+
+        if (code == NativeKeyEvent.VC_SLASH) {
+            return '/';
+        }
+        if (code == NativeKeyEvent.VC_MINUS) {
+            return shiftDown ? '_' : '-';
+        }
+
+        String text = NativeKeyEvent.getKeyText(code);
+        if (text.length() == 1) {
+            char ch = text.charAt(0);
+            if (Character.isLetterOrDigit(ch)) {
+                return Character.toLowerCase(ch);
+            }
+        }
+
+        return null;
     }
 
     /**

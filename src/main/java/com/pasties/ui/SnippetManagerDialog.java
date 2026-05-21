@@ -138,7 +138,7 @@ public class SnippetManagerDialog extends JDialog {
         keyField.setEnabled(isNew); // Key is immutable after creation
 
         Object[] fields = {
-                "Key (used as /<key>):", keyField,
+                "Key (used as /<key>, case-insensitive):", keyField,
                 "Expansion value:", new JScrollPane(valueArea),
                 "Description (optional):", descField
         };

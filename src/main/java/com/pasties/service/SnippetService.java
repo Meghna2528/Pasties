@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,7 +49,7 @@ public class SnippetService {
     public CompletableFuture<Void> initialize() {
         return repo.getAll().thenAccept(snippets -> {
             snippetMap.clear();
-            snippets.forEach(s -> snippetMap.put(s.keyName(), s));
+            snippets.forEach(s -> snippetMap.put(normalizeKey(s.keyName()), s));
             log.info("SnippetService initialised with {} snippet(s)", snippetMap.size());
         });
     }
@@ -63,7 +64,7 @@ public class SnippetService {
      * @return the matching snippet, or empty if not found
      */
     public Optional<Snippet> findByKey(String keyName) {
-        return Optional.ofNullable(snippetMap.get(keyName));
+        return Optional.ofNullable(snippetMap.get(normalizeKey(keyName)));
     }
 
     /**
@@ -86,7 +87,8 @@ public class SnippetService {
      *         fails with {@link IllegalArgumentException} on validation error
      */
     public CompletableFuture<Void> saveSnippet(String keyName, String value, String description) {
-        if (keyName == null || !keyName.matches(KEY_PATTERN)) {
+        String normalizedKey = normalizeKey(keyName);
+        if (normalizedKey == null || !normalizedKey.matches(KEY_PATTERN)) {
             return CompletableFuture.failedFuture(new IllegalArgumentException(
                     "Key must match [a-zA-Z0-9_-]+ but was: " + keyName));
         }
@@ -95,10 +97,10 @@ public class SnippetService {
                     "Snippet value must not be blank"));
         }
 
-        return repo.save(keyName, value, description)
-                .thenCompose(v -> repo.findByKey(keyName))
+        return repo.save(normalizedKey, value, description)
+                .thenCompose(v -> repo.findByKey(normalizedKey))
                 .thenAccept(opt -> opt.ifPresent(s -> {
-                    snippetMap.put(s.keyName(), s);
+                    snippetMap.put(normalizeKey(s.keyName()), s);
                     notifyListeners();
                 }));
     }
@@ -110,8 +112,9 @@ public class SnippetService {
      * @return future completing when the deletion is done
      */
     public CompletableFuture<Void> deleteSnippet(String keyName) {
-        return repo.deleteByKey(keyName).thenAccept(v -> {
-            snippetMap.remove(keyName);
+        String normalizedKey = normalizeKey(keyName);
+        return repo.deleteByKey(normalizedKey).thenAccept(v -> {
+            snippetMap.remove(normalizedKey);
             notifyListeners();
         });
     }
@@ -138,5 +141,9 @@ public class SnippetService {
                 log.error("Error in snippet change listener", e);
             }
         }
+    }
+
+    private String normalizeKey(String keyName) {
+        return keyName == null ? null : keyName.strip().toLowerCase(Locale.ROOT);
     }
 }

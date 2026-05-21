@@ -72,7 +72,7 @@ public class SnippetRepository {
         return CompletableFuture.supplyAsync(() -> {
             String sql = """
                     SELECT id, key_name, value, description, created_at, updated_at
-                    FROM snippets WHERE key_name = ?
+                    FROM snippets WHERE lower(key_name) = lower(?)
                     """;
             try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
                 ps.setString(1, keyName);
@@ -99,21 +99,32 @@ public class SnippetRepository {
     public CompletableFuture<Void> save(String keyName, String value, String description) {
         return CompletableFuture.runAsync(() -> {
             long now = Instant.now().toEpochMilli();
-            String sql = """
+            String update = """
+                    UPDATE snippets
+                    SET key_name = ?, value = ?, description = ?, updated_at = ?
+                    WHERE lower(key_name) = lower(?)
+                    """;
+            String insert = """
                     INSERT INTO snippets (key_name, value, description, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(key_name) DO UPDATE SET
-                        value       = excluded.value,
-                        description = excluded.description,
-                        updated_at  = excluded.updated_at
                     """;
-            try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
+            try (PreparedStatement ps = db.getConnection().prepareStatement(update)) {
                 ps.setString(1, keyName);
                 ps.setString(2, value);
                 ps.setString(3, description);
                 ps.setLong(4, now);
-                ps.setLong(5, now);
-                ps.executeUpdate();
+                ps.setString(5, keyName);
+                int updated = ps.executeUpdate();
+                if (updated == 0) {
+                    try (PreparedStatement insertPs = db.getConnection().prepareStatement(insert)) {
+                        insertPs.setString(1, keyName);
+                        insertPs.setString(2, value);
+                        insertPs.setString(3, description);
+                        insertPs.setLong(4, now);
+                        insertPs.setLong(5, now);
+                        insertPs.executeUpdate();
+                    }
+                }
                 log.info("Snippet '{}' saved", keyName);
             } catch (SQLException e) {
                 log.error("Error saving snippet '{}'", keyName, e);
@@ -131,7 +142,7 @@ public class SnippetRepository {
     public CompletableFuture<Void> deleteByKey(String keyName) {
         return CompletableFuture.runAsync(() -> {
             try (PreparedStatement ps = db.getConnection()
-                    .prepareStatement("DELETE FROM snippets WHERE key_name = ?")) {
+                    .prepareStatement("DELETE FROM snippets WHERE lower(key_name) = lower(?)")) {
                 ps.setString(1, keyName);
                 ps.executeUpdate();
                 log.info("Snippet '{}' deleted", keyName);
