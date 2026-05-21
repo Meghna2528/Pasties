@@ -17,11 +17,10 @@ import java.util.stream.IntStream;
  *
  * <p>Settings exposed:
  * <ul>
- *   <li>Max history size — dropdown, multiples of 10 up to 1000</li>
- *   <li>Paste delay in ms — dropdown, multiples of 10, 20–500</li>
+ *   <li>Max history size — dropdown, multiples of 10, 10–300</li>
  *   <li>Recent menu items per page — dropdown, multiples of 10, 10–150</li>
  *   <li>Popup history items per page — dropdown, multiples of 10, 10–100</li>
- *   <li>Entry TTL (days) — dropdown, multiples of 10, 10–3650</li>
+ *   <li>Entry TTL (days) — dropdown, multiples of 10, 90–150</li>
  *   <li>Hotkey modifiers — Ctrl / Shift / Alt checkboxes</li>
  *   <li>Hotkey key — A–Z dropdown</li>
  *   <li>Start on login — checkbox</li>
@@ -56,6 +55,7 @@ public class PreferencesDialog extends JDialog {
     private JComboBox<String> keyCombo;
 
     private JCheckBox loginCheckBox;
+    private boolean saved = false;
 
     public PreferencesDialog(Frame parent,
                               AppConfig config,
@@ -71,6 +71,10 @@ public class PreferencesDialog extends JDialog {
         setResizable(false);
         setLocationRelativeTo(parent);
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+    }
+
+    public boolean wasSaved() {
+        return saved;
     }
 
     private void buildUI() {
@@ -166,6 +170,7 @@ public class PreferencesDialog extends JDialog {
         JButton okBtn = new JButton("OK");
         okBtn.addActionListener(e -> {
             applyAndSave();
+            saved = true;
             dispose();
         });
         getRootPane().setDefaultButton(okBtn);

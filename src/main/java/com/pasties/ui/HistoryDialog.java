@@ -8,6 +8,8 @@ import org.slf4j.LoggerFactory;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.event.*;
 import java.util.Collections;
@@ -15,7 +17,8 @@ import java.util.List;
 
 /**
  * Modal dialog showing up to 200 clipboard history entries, paginated at
- * 10 entries per page (20 pages maximum).
+ * 10 entries per page (20 pages maximum), with in-memory search over the
+ * loaded entries.
  *
  * <p>Entries are loaded from the database on each open via
  * {@link ClipboardService#loadHistory(int)}, so they reflect the full
@@ -36,6 +39,7 @@ public class HistoryDialog extends JDialog {
     private final ClipboardService clipboardService;
     private final PasteService pasteService;
 
+    private final JTextField searchField;
     private final DefaultListModel<ClipboardEntry> model = new DefaultListModel<>();
     private final JList<ClipboardEntry> list;
     private final JButton prevBtn;
@@ -43,6 +47,7 @@ public class HistoryDialog extends JDialog {
     private final JLabel pageLabel;
 
     private List<ClipboardEntry> allEntries = Collections.emptyList();
+    private List<ClipboardEntry> filteredEntries = Collections.emptyList();
     private int currentPage = 0;
 
     public HistoryDialog(Frame parent,
@@ -52,6 +57,7 @@ public class HistoryDialog extends JDialog {
         this.clipboardService = clipboardService;
         this.pasteService     = pasteService;
 
+        searchField = buildSearchField();
         list = buildList();
 
         prevBtn   = new JButton("\u2190 Prev");
@@ -72,6 +78,7 @@ public class HistoryDialog extends JDialog {
         scroll.setBorder(BorderFactory.createEmptyBorder());
 
         getContentPane().setLayout(new BorderLayout());
+        getContentPane().add(searchField, BorderLayout.NORTH);
         getContentPane().add(scroll,   BorderLayout.CENTER);
         getContentPane().add(navPanel, BorderLayout.SOUTH);
 
@@ -95,16 +102,20 @@ public class HistoryDialog extends JDialog {
     public void open() {
         model.clear();
         allEntries = Collections.emptyList();
+        filteredEntries = Collections.emptyList();
         currentPage = 0;
+        searchField.setText("");
         pageLabel.setText("Loading...");
         prevBtn.setEnabled(false);
         nextBtn.setEnabled(false);
 
         setVisible(true);
+        searchField.requestFocusInWindow();
 
         clipboardService.loadHistory(MAX_ENTRIES).thenAccept(entries -> {
             SwingUtilities.invokeLater(() -> {
                 allEntries = entries;
+                filteredEntries = entries;
                 currentPage = 0;
                 renderPage();
             });
@@ -122,8 +133,21 @@ public class HistoryDialog extends JDialog {
 
     // ---- Private helpers ----
 
+    private void applyFilter() {
+        String query = searchField.getText().trim().toLowerCase();
+        if (query.isEmpty()) {
+            filteredEntries = allEntries;
+        } else {
+            filteredEntries = allEntries.stream()
+                    .filter(entry -> entry.content().toLowerCase().contains(query))
+                    .toList();
+        }
+        currentPage = 0;
+        renderPage();
+    }
+
     private void renderPage() {
-        int total      = allEntries.size();
+        int total      = filteredEntries.size();
         int totalPages = Math.max(1, (int) Math.ceil((double) total / PAGE_SIZE));
         // Clamp page index
         currentPage = Math.max(0, Math.min(currentPage, totalPages - 1));
@@ -133,11 +157,13 @@ public class HistoryDialog extends JDialog {
 
         model.clear();
         if (total == 0) {
-            pageLabel.setText("No history");
+            pageLabel.setText(searchField.getText().trim().isEmpty() ? "No history" : "No matches");
         } else {
-            allEntries.subList(from, to).forEach(model::addElement);
-            pageLabel.setText(String.format("Page %d / %d  (%d entries)",
-                    currentPage + 1, totalPages, total));
+            filteredEntries.subList(from, to).forEach(model::addElement);
+            String label = searchField.getText().trim().isEmpty()
+                    ? String.format("Page %d / %d  (%d entries)", currentPage + 1, totalPages, total)
+                    : String.format("Page %d / %d  (%d matches)", currentPage + 1, totalPages, total);
+            pageLabel.setText(label);
         }
 
         prevBtn.setEnabled(currentPage > 0);
@@ -145,8 +171,45 @@ public class HistoryDialog extends JDialog {
 
         if (!model.isEmpty()) {
             list.setSelectedIndex(0);
-            list.requestFocusInWindow();
         }
+    }
+
+    private JTextField buildSearchField() {
+        JTextField field = new JTextField();
+        field.setBorder(BorderFactory.createEmptyBorder(10, 12, 8, 12));
+        field.putClientProperty("JTextField.placeholderText", "Search history...");
+        field.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { applyFilter(); }
+            @Override public void removeUpdate(DocumentEvent e) { applyFilter(); }
+            @Override public void changedUpdate(DocumentEvent e) { applyFilter(); }
+        });
+        field.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                switch (e.getKeyCode()) {
+                    case KeyEvent.VK_ENTER -> {
+                        ClipboardEntry selected = list.getSelectedValue();
+                        if (selected != null) {
+                            pasteEntry(selected);
+                        }
+                        e.consume();
+                    }
+                    case KeyEvent.VK_DOWN -> {
+                        list.requestFocusInWindow();
+                        if (!model.isEmpty() && list.getSelectedIndex() < 0) {
+                            list.setSelectedIndex(0);
+                        }
+                        e.consume();
+                    }
+                    case KeyEvent.VK_ESCAPE -> {
+                        dispose();
+                        e.consume();
+                    }
+                    default -> { }
+                }
+            }
+        });
+        return field;
     }
 
     private JList<ClipboardEntry> buildList() {

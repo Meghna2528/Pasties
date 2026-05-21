@@ -27,11 +27,12 @@ import java.util.List;
  * <h2>Menu structure</h2>
  * <pre>
  * [Pasties icon]
- *   ├─ Recent (submenu — up to 10 items, dynamically refreshed)
+ *   ├─ Recent (top-N recent items, dynamically refreshed)
+ *   |-- History
  *   ├─ ───────────────────────
- *   ├─ Snippets…
- *   ├─ Performance Dashboard…
- *   ├─ Preferences…
+ *   ├─ Snippets
+ *   ├─ Performance Dashboard
+ *   ├─ Preferences
  *   ├─ ───────────────────────
  *   └─ Quit Pasties
  * </pre>
@@ -55,13 +56,9 @@ public class MenuBarApp {
     private PopupMenu trayMenu;
     private Menu recentMenu;
 
-    private ClipboardHistoryPopup historyPopup;
     private MetricsDashboardDialog dashboardDialog;
-    private HistoryDialog historyDialog;
 
-    /** Current page index for the Recent submenu (0-based). */
-    private int recentPage = 0;
-    /** Last known full entry list, kept so page navigation can re-render without a listener call. */
+    /** Last known full entry list, used to render the Recent submenu and search picker. */
     private List<ClipboardEntry> cachedEntries = List.of();
 
     public MenuBarApp(ClipboardService clipboardService,
@@ -100,9 +97,7 @@ public class MenuBarApp {
             throw new RuntimeException("Could not add icon to system tray", e);
         }
 
-        historyPopup = new ClipboardHistoryPopup(clipboardService, pasteService, config);
         dashboardDialog = new MetricsDashboardDialog(null, metricsService);
-        historyDialog = new HistoryDialog(null, clipboardService, pasteService);
 
         // Subscribe to clipboard history changes to keep the Recent submenu fresh
         clipboardService.addChangeListener(entries ->
@@ -113,11 +108,37 @@ public class MenuBarApp {
     }
 
     /**
-     * Shows the clipboard history popup at the current cursor position.
+     * Opens the searchable clipboard picker (global hotkey).
      * Must be called on the EDT (dispatched by {@link com.pasties.hook.GlobalKeyboardHook}).
      */
-    public void showHistoryPopup() {
-        historyPopup.show();
+    public void showSearchPicker() {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::showSearchPicker);
+            return;
+        }
+
+        clipboardService.loadHistory(config.getMaxHistorySize())
+                .thenAccept(entries -> SwingUtilities.invokeLater(() -> {
+                    cachedEntries = entries;
+                    ClipboardSearchPicker picker = new ClipboardSearchPicker(
+                            null,
+                            entries,
+                            pasteService
+                    );
+                    picker.showPicker();
+                }))
+                .exceptionally(ex -> {
+                    log.error("Failed to load clipboard history for picker", ex);
+                    SwingUtilities.invokeLater(() -> {
+                        ClipboardSearchPicker picker = new ClipboardSearchPicker(
+                                null,
+                                cachedEntries,
+                                pasteService
+                        );
+                        picker.showPicker();
+                    });
+                    return null;
+                });
     }
 
     /** Removes the tray icon on shutdown. */
@@ -137,12 +158,12 @@ public class MenuBarApp {
         menu.add(recentMenu);
 
         menu.add(buildItem("History", e ->
-                SwingUtilities.invokeLater(() -> historyDialog.open())
+                SwingUtilities.invokeLater(this::showSearchPicker)
         ));
 
         menu.addSeparator();
 
-        menu.add(buildItem("Snippets", e ->
+        menu.add(buildItem("Edit Snippets...", e ->
                 SwingUtilities.invokeLater(() ->
                         new SnippetManagerDialog(null, snippetService).setVisible(true))
         ));
@@ -151,10 +172,15 @@ public class MenuBarApp {
                 SwingUtilities.invokeLater(() -> dashboardDialog.showDashboard())
         ));
 
-        menu.add(buildItem("Preferences", e ->
-                SwingUtilities.invokeLater(() ->
-                        new PreferencesDialog(null, config, clipboardService, configRepo)
-                                .setVisible(true))
+        menu.add(buildItem("Preferences...", e ->
+                SwingUtilities.invokeLater(() -> {
+                    PreferencesDialog dialog =
+                            new PreferencesDialog(null, config, clipboardService, configRepo);
+                    dialog.setVisible(true);
+                    if (dialog.wasSaved()) {
+                        renderRecentMenu();
+                    }
+                })
         ));
 
         menu.addSeparator();
@@ -170,15 +196,9 @@ public class MenuBarApp {
     /** Rebuilds the Recent submenu entries whenever clipboard history changes. */
     private void refreshRecentMenu(List<ClipboardEntry> entries) {
         cachedEntries = entries;
-        // Clamp page in case history shrank or page size changed
-        int pageSize = Math.max(1, config.getRecentMenuSize());
-        int totalPages = entries.isEmpty() ? 1 : (int) Math.ceil((double) entries.size() / pageSize);
-        if (recentPage >= totalPages) recentPage = Math.max(0, totalPages - 1);
-
         renderRecentMenu();
     }
 
-    /** Renders the current page of the Recent submenu from {@code cachedEntries}. */
     private void renderRecentMenu() {
         recentMenu.removeAll();
 
@@ -187,14 +207,8 @@ public class MenuBarApp {
             return;
         }
 
-        int pageSize  = Math.max(1, config.getRecentMenuSize());
-        int total     = cachedEntries.size();
-        int totalPages = (int) Math.ceil((double) total / pageSize);
-        int from      = recentPage * pageSize;
-        int to        = Math.min(from + pageSize, total);
-
-        List<ClipboardEntry> page = cachedEntries.subList(from, to);
-        for (ClipboardEntry entry : page) {
+        int maxEntries = Math.min(cachedEntries.size(), config.getRecentMenuSize());
+        for (ClipboardEntry entry : cachedEntries.subList(0, maxEntries)) {
             MenuItem item = new MenuItem(entry.preview(PREVIEW_CHARS));
             item.addActionListener(e -> {
                 Thread t = new Thread(
@@ -204,33 +218,6 @@ public class MenuBarApp {
                 t.start();
             });
             recentMenu.add(item);
-        }
-
-        // Navigation row (only shown when there is more than one page)
-        if (totalPages > 1) {
-            recentMenu.addSeparator();
-
-            // Page indicator (disabled label)
-            recentMenu.add(buildDisabledItem(
-                    String.format("Page %d / %d", recentPage + 1, totalPages)));
-
-            if (recentPage > 0) {
-                MenuItem prev = new MenuItem("\u2190 Prev");
-                prev.addActionListener(e -> {
-                    recentPage--;
-                    renderRecentMenu();
-                });
-                recentMenu.add(prev);
-            }
-
-            if (recentPage < totalPages - 1) {
-                MenuItem next = new MenuItem("Next \u2192");
-                next.addActionListener(e -> {
-                    recentPage++;
-                    renderRecentMenu();
-                });
-                recentMenu.add(next);
-            }
         }
     }
 

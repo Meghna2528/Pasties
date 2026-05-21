@@ -19,8 +19,8 @@ import java.util.function.Consumer;
 /**
  * Business logic for clipboard history management.
  *
- * <p>Maintains an in-memory cache ({@link CopyOnWriteArrayList}) of the 50
- * most-recent entries so that the history popup can display content instantly
+ * <p>Maintains an in-memory cache ({@link CopyOnWriteArrayList}) of the most
+ * recent entries (up to {@code max_history_size}) so UI surfaces can display
  * without a database round-trip. The cache is kept in sync after every
  * {@link #onNewContent(String)} call.
  *
@@ -32,7 +32,7 @@ import java.util.function.Consumer;
 public class ClipboardService {
 
     private static final Logger log = LoggerFactory.getLogger(ClipboardService.class);
-    // Cache size is driven by config.getPopupHistorySize() at runtime
+    // Cache size is driven by config.getMaxHistorySize() at runtime
 
     private final ClipboardRepository repo;
     private final AppConfig config;
@@ -59,7 +59,7 @@ public class ClipboardService {
         String hash = sha256(content);
 
         repo.upsert(content, hash, config.getMaxHistorySize(), config.getEntryTtlDays())
-                .thenCompose(v -> repo.getRecent(config.getPopupHistorySize()))
+                .thenCompose(v -> repo.getRecent(config.getMaxHistorySize()))
                 .thenAccept(entries -> {
                     cache.clear();
                     cache.addAll(entries);
@@ -110,7 +110,7 @@ public class ClipboardService {
      */
     public CompletableFuture<Void> deleteEntry(long id) {
         return repo.deleteById(id)
-                .thenCompose(v -> repo.getRecent(config.getPopupHistorySize()))
+                .thenCompose(v -> repo.getRecent(config.getMaxHistorySize()))
                 .thenAccept(entries -> {
                     cache.clear();
                     cache.addAll(entries);

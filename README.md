@@ -11,7 +11,7 @@ Pasties lives in your menu bar, keeps a searchable history of everything you've 
 | Feature | Description |
 |---|---|
 | **Clipboard history** | Stores up to 300 text entries (configurable). Deduplicated by content hash. TTL-pruned (default 90 days). |
-| **Global hotkey popup** | Press **Ctrl+Shift+V** (or **⌘+Shift+V**) anywhere to open a scrollable, paginated history picker at your cursor. |
+| **Global hotkey picker** | Press **Ctrl+Shift+V** or **⌘+Shift+V** to open a searchable clipboard picker. Type to filter, use ↑/↓ to navigate, Enter to paste, Esc to close. |
 | **Full history browser** | Open **History** from the menu bar to browse all entries within the TTL window (up to 200 entries, paginated 10 per page). |
 | **Snippet expansion** | Type `/addr` in any app and it instantly expands to your saved text. |
 | **Performance dashboard** | Live metrics: paste speed, snippet expansion speed, memory, CPU, DB size, and payload sizes. |
@@ -24,7 +24,7 @@ Pasties lives in your menu bar, keeps a searchable history of everything you've 
 
 | Dependency | Version | How to install |
 |---|---|---|
-| Java | 24 (JDK) | `brew install openjdk@24` |
+| Java | 21 (JDK) | `brew install openjdk@21` |
 | Maven | 3.9+ | `brew install maven` |
 | macOS | 13 Ventura or later | — |
 
@@ -65,7 +65,7 @@ After granting both permissions, restart Pasties.
 # 1. Package the fat JAR
 mvn package -q
 
-# 2. Bundle with jpackage (requires JDK 24 jpackage on PATH)
+# 2. Bundle with jpackage (requires JDK 21 jpackage on PATH)
 jpackage \
   --input target \
   --main-jar pasties-1.0.0.jar \
@@ -85,13 +85,14 @@ The resulting `target/dist/Pasties.app` can be moved to `/Applications`.
 
 ## Usage
 
-### Clipboard history popup
+### Clipboard search picker
 
-Press **Ctrl+Shift+V** or **⌘+Shift+V** in any application. A popup appears at your cursor showing clipboard entries (most-recent first), paginated by the configured popup page size (default 50 per page).
+Press **Ctrl+Shift+V** or **⌘+Shift+V** in any application to open a searchable floating picker.
 
-- **Single click** or **Enter** — pastes the selected item into the previously active app.
-- **Escape** or **click outside** — dismisses the popup.
-- **← Prev / Next →** — navigate pages when history exceeds one page.
+- **Type** — filter results (up to 100 matches)
+- **↑ / ↓** — move selection
+- **Enter** or **double-click** — paste the selected item into the previously active app
+- **Esc** — close the picker
 
 ### Full history browser
 
@@ -111,7 +112,7 @@ Click **History** in the menu bar to open the full history dialog. Loads up to 2
 
 | Menu item | Action |
 |---|---|
-| **Recent** | Submenu showing the most-recent in-memory clipboard entries, paginated by `recent_menu_size` (default 10 per page). Click to paste. Use ← Prev / Next → to navigate. |
+| **Recent** | Shows the latest clipboard entries for quick mouse-based paste (configured by `recent_menu_size`, default 10). The full searchable picker is available through the global hotkey. |
 | **History** | Open the full history browser dialog — loads up to 200 entries from the database (the full TTL window), paginated at 10 per page. |
 | **Snippets** | Open the snippet manager to add, edit, or delete snippets. |
 | **Performance Dashboard** | Open the live metrics dashboard. |
@@ -145,11 +146,11 @@ All settings are stored in the SQLite `config` table and editable via **Preferen
 | Key | Default | UI range | Description |
 |---|---|---|---|
 | `max_history_size` | `200` | 10–300 | Maximum clipboard entries to keep |
-| `hotkey_modifiers` | `ctrl+shift` | Ctrl/Cmd, Shift, Alt checkboxes | Modifier keys for the history popup hotkey. "Ctrl/Cmd" means either key triggers the hotkey. |
-| `hotkey_key` | `V` | A–Z dropdown | Trigger key for the history popup hotkey |
+| `hotkey_modifiers` | `ctrl+shift` | Ctrl/Cmd, Shift, Alt checkboxes | Modifier keys for the search picker hotkey. "Ctrl/Cmd" means either key triggers the hotkey. |
+| `hotkey_key` | `V` | A–Z dropdown | Trigger key for the search picker hotkey |
 | `snippet_prefix` | `/` | — | Character that starts a snippet trigger (DB only) |
-| `recent_menu_size` | `10` | 10–150 | Entries per page in the Recent submenu |
-| `popup_history_size` | `50` | 10–100 | Entries per page in the hotkey popup |
+| `recent_menu_size` | `10` | 10–150 | Maximum entries shown in the Recent tray submenu |
+| `popup_history_size` | `50` | 10–100 | Legacy setting (hotkey picker now uses search with a 100-result cap) |
 | `entry_ttl_days` | `90` | 90–150 | Days before a clipboard entry is pruned |
 | `start_on_login` | `false` | Checkbox | Auto-start at login (login item setup is manual) |
 
@@ -198,8 +199,9 @@ src/main/java/com/pasties/
 │   ├── ClipboardMonitor.java        500 ms clipboard poll
 │   └── GlobalKeyboardHook.java      JNativeHook listener + state machine
 └── ui/                              Swing/AWT UI components
-    ├── MenuBarApp.java              System tray + paginated Recent submenu
-    ├── ClipboardHistoryPopup.java   JWindow at cursor (hotkey popup, paginated)
+    ├── MenuBarApp.java              System tray + top-N Recent submenu
+    ├── ClipboardSearchPicker.java   Searchable floating picker (global hotkey)
+    ├── ClipboardHistoryPopup.java   Legacy popup (unused; superseded by search picker)
     ├── HistoryDialog.java           Modal full-history browser (DB-backed)
     ├── SnippetManagerDialog.java    Add/edit/delete snippets
     ├── PreferencesDialog.java       Settings editor + clear history
@@ -249,6 +251,47 @@ MIT
 
 ---
 
+## Troubleshooting
+
+### macOS permissions keep asking even after Pasties is enabled
+
+During local development, macOS may keep showing the Accessibility/Input Monitoring prompt even when **Pasties** appears enabled in System Settings. This usually happens when TCC has stale permission entries from an older app bundle, an unsigned rebuilt app, or multiple copies of `Pasties.app`.
+
+Use this reset flow after installing the latest app bundle to `/Applications`:
+
+```bash
+tccutil reset Accessibility com.pasties && \
+tccutil reset ListenEvent com.pasties && \
+codesign --force --deep --sign - /Applications/Pasties.app
+```
+
+Then re-enable Pasties manually:
+
+1. `System Settings → Privacy & Security → Accessibility → Pasties → On`
+2. `System Settings → Privacy & Security → Input Monitoring → Pasties → On`
+3. Restart Pasties:
+
+```bash
+pkill -f Pasties || true
+open /Applications/Pasties.app
+```
+
+To avoid duplicate/stale permission entries, keep only one installed copy of the app:
+
+```bash
+mdfind "kMDItemCFBundleIdentifier == 'com.pasties'"
+```
+
+Expected result:
+
+```text
+/Applications/Pasties.app
+```
+
+If another copy appears, such as `target/dist/Pasties.app`, remove it and launch only the `/Applications` copy.
+
+---
+
 ## Project Structure and UMLs
 
 The diagrams below visualize how `Main.java` wires the layered packages, how startup proceeds, and how clipboard/snippet data flows at runtime. Rendered automatically on GitHub; use any Mermaid-compatible viewer locally.
@@ -265,7 +308,7 @@ The diagrams below visualize how `Main.java` wires the layered packages, how sta
 | `repository/` | 3 | SQLite CRUD (per-table executors) |
 | `service/` | 4 | History + listeners, snippets, paste, metrics |
 | `hook/` | 2 | Clipboard poll + global keys |
-| `ui/` | 6 | Tray, hotkey popup, history dialog, settings dialogs |
+| `ui/` | 7 | Tray, search picker, history dialog, settings dialogs |
 | `test/` | 3 | Unit tests (services + snippet FSM) |
 
 ### Layered architecture (dependencies)
@@ -285,8 +328,8 @@ flowchart TB
     end
 
     subgraph UI["ui/ — Swing/AWT (EDT)"]
-        MenuBar["MenuBarApp<br/>tray + paginated Recent"]
-        HistoryPopup["ClipboardHistoryPopup<br/>hotkey popup, paginated"]
+        MenuBar["MenuBarApp<br/>tray + top-N Recent"]
+        SearchPicker["ClipboardSearchPicker<br/>hotkey search picker"]
         HistDlg["HistoryDialog<br/>full history, DB load"]
         SnippetDlg["SnippetManagerDialog"]
         PrefsDlg["PreferencesDialog"]
@@ -348,9 +391,9 @@ flowchart TB
     KeyHook -->|"hotkey callback"| MenuBar
 
     MenuBar --> ClipSvc & SnipSvc & PasteSvc & MetricsSvc & ConfigRepo & AppConfig
-    MenuBar --> HistoryPopup & HistDlg & SnippetDlg & PrefsDlg & MetricsDlg
+    MenuBar --> SearchPicker & HistDlg & SnippetDlg & PrefsDlg & MetricsDlg
     MenuBar -->|"change listener"| ClipSvc
-    HistoryPopup --> ClipSvc & PasteSvc & AppConfig
+    SearchPicker --> PasteSvc
     HistDlg --> ClipSvc & PasteSvc
     PrefsDlg --> ClipSvc & ConfigRepo & AppConfig
     MetricsDlg --> MetricsSvc
@@ -403,13 +446,13 @@ flowchart LR
         CS -->|"notify listeners"| MB2["MenuBarApp Recent"]
     end
 
-    subgraph Hotkey["Hotkey popup path"]
+    subgraph Hotkey["Hotkey search picker path"]
         HK["GlobalKeyboardHook"]
-        MB4["MenuBarApp<br/>showHistoryPopup()"]
-        HP["ClipboardHistoryPopup<br/>in-memory cache, paginated"]
-        PS1["PasteService<br/>paste-from-popup thread"]
-        HK -->|"invokeLater callback"| MB4 --> HP --> PS1
-        CS --> HP
+        MB4["MenuBarApp<br/>showSearchPicker()"]
+        SP["ClipboardSearchPicker<br/>filter + list"]
+        PS1["PasteService<br/>paste-from-search-picker thread"]
+        HK -->|"invokeLater callback"| MB4 --> SP --> PS1
+        CS --> MB4
         PS1 -->|"Cmd+V via Robot"| App["Active app"]
     end
 
@@ -432,7 +475,7 @@ flowchart LR
     end
 
     subgraph Tray["Tray Recent path"]
-        MB["MenuBarApp<br/>paginated submenu"]
+        MB["MenuBarApp<br/>top-N submenu"]
         PS4["PasteService<br/>paste-from-menu thread"]
         MB --> CS
         MB --> PS4 --> App
@@ -455,7 +498,7 @@ flowchart TB
     end
 
     subgraph Ephemeral["Ephemeral daemon threads per paste"]
-        PF["paste-from-popup"]
+        PF["paste-from-search-picker"]
         PM["paste-from-menu"]
         PH["paste-from-history"]
     end
@@ -468,7 +511,7 @@ flowchart TB
     ClipRepo["Repositories"] --> DBC & DBS & DBK
     PEx --> PasteSvc["PasteService.pasteText"]
 
-    HistPopup["ClipboardHistoryPopup"] --> PF
+    SearchPicker2["ClipboardSearchPicker"] --> PF
     MenuBar["MenuBarApp Recent"] --> PM
     HistDlg["HistoryDialog"] --> PH
     PF & PM & PH --> PasteSvc

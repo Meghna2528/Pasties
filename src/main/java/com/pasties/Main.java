@@ -71,6 +71,7 @@ public class Main {
         AppConfig config = configRepo.load();
         log.info("Config loaded — maxHistory={}, hotkey={}+{}",
                 config.getMaxHistorySize(), config.getHotkeyModifiers(), config.getHotkeyKey());
+        log.info("Tip: on macOS, Command is usually represented as the meta/cmd modifier in global hotkey config");
 
         // 4. Repositories + Services
         ClipboardRepository clipboardRepo = new ClipboardRepository(db);
@@ -113,7 +114,7 @@ public class Main {
                 snippetService,
                 pasteService,
                 config,
-                menuBarApp::showHistoryPopup
+                menuBarApp::showSearchPicker
         );
         keyboardHook.register();
 
