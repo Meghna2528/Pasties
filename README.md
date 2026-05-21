@@ -217,7 +217,7 @@ src/main/java/com/pasties/
 | **EDT** | All Swing/AWT UI: popup show/hide, dialogs |
 | **JNativeHook native thread** | Receive key events, run snippet state machine |
 | **`paste-executor`** | `PasteService.expandSnippet()` — Robot blocks here (snippet expansion only) |
-| **Ephemeral daemon threads** | `paste-from-popup`, `paste-from-menu`, `paste-from-history` — one per clipboard paste operation |
+| **Ephemeral daemon threads** | `paste-from-search-picker`, `paste-from-menu`, `paste-from-history` — one per clipboard paste operation |
 | **`clipboard-monitor`** | 500 ms clipboard polling |
 | **`db-clipboard`** | All clipboard table SQL |
 | **`db-snippet`** | All snippets table SQL |
